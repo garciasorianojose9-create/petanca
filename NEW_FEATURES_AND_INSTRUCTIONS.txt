@@ -1,0 +1,34 @@
+NUEVAS CARACTERÍSTICAS E INSTRUCCIONES DE DESPLIEGUE
+
+1. Traducción al Español
+   - Toda la interfaz de usuario ha sido traducida al español de España.
+   - Se han actualizado los textos de inicio de sesión, menús, botones y mensajes de estado.
+
+2. Importación desde Excel
+   - Base de Datos de Usuarios: Se ha añadido un botón "Importar Excel" que permite cargar múltiples usuarios desde un archivo .xlsx o .xls.
+   - Inscripciones de Torneo: Se ha añadido un botón "Importar Excel" en la gestión de inscripciones que permite cargar equipos y jugadores masivamente.
+
+3. Mejoras de Interfaz
+   - Se ha eliminado el cuadro de "Default Administrator Access" del inicio de sesión.
+   - Diseño responsive optimizado para móviles, tablets y escritorio.
+
+4. Servidor y API (Backend)
+   - El archivo `server.ts` ha sido actualizado para usar módulos ES (import/export) y ser compatible con la nueva funcionalidad.
+   - Nuevas Rutas de API implementadas:
+     - `POST /api/users/batch`: Para la creación masiva de usuarios.
+     - `POST /api/teams/batch`: Para la creación masiva de equipos.
+
+INSTRUCCIONES DE DESPLIEGUE:
+
+1. Subir Archivos:
+   - Asegúrate de subir el nuevo archivo `server.ts` al servidor.
+   - Sube la carpeta `dist` generada (que contiene la versión de producción de la web).
+
+2. Dependencias:
+   - El servidor requiere las siguientes dependencias en `package.json` (asegúrate de que estén instaladas):
+     - `express`
+     - `xlsx` (para el procesamiento de Excel en el frontend, aunque el servidor solo recibe JSON)
+     - `cors` (si es necesario, aunque en este entorno se sirve estático)
+
+3. Ejecución:
+   - Inicia el servidor con `node server.ts` (o `npm start` si el script está configurado).

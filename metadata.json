@@ -1,0 +1,7 @@
+{
+  "name": "Murcia Petanca Manager",
+  "description": "A comprehensive tournament management system for the Petanque Federation of Murcia, featuring Swiss system standings, poule phase management, live match tracking, and digital check-in.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
