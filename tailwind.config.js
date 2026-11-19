@@ -2,7 +2,11 @@
 export default {
   content: [
     "./index.html",
-    "./**/*.{js,ts,jsx,tsx}",
+    "./App.tsx",
+    "./index.tsx",
+    "./components/**/*.{js,ts,jsx,tsx}",
+    "./views/**/*.{js,ts,jsx,tsx}",
+    "./src/**/*.{js,ts,jsx,tsx}",
   ],
   darkMode: 'class',
   theme: {
@@ -21,8 +25,9 @@ export default {
         "gold": "#FFD700",
       },
       fontFamily: {
-        "display": ["Inter", "sans-serif"],
-        "sans": ["Inter", "sans-serif"]
+        "display": ['"Plus Jakarta Sans"', 'system-ui', 'sans-serif'],
+        "sans": ['"Plus Jakarta Sans"', 'system-ui', 'sans-serif'],
+        "mono": ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
       },
     },
   },

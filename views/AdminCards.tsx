@@ -20,10 +20,11 @@ export const AdminCards: React.FC<AdminCardsProps> = ({ competitions, players, t
     ).sort((a, b) => b.timestamp - a.timestamp);
 
     const filteredCards = allCards.filter(card => {
-        const player = players.find(p => p.id === card.playerId || p.name === card.playerId); // Handle both ID and name if needed
-        const playerName = player ? player.name : card.playerId;
+        const player = players.find(p => p.id === card.playerId || p.name === card.playerId);
+        const playerName = String(player ? player.name : card.playerId || '');
+        const compName = String(card.competitionName || '');
         const matchesSearch = playerName.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                              card.competitionName.toLowerCase().includes(searchQuery.toLowerCase());
+                              compName.toLowerCase().includes(searchQuery.toLowerCase());
         const matchesColor = filterColor === 'ALL' || card.color === filterColor;
         return matchesSearch && matchesColor;
     });

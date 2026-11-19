@@ -33,6 +33,7 @@ export const Layout: React.FC<LayoutProps> = ({
 }) => {
     const [showMobileMenu, setShowMobileMenu] = useState(false);
     const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
+    const [currentPassword, setCurrentPassword] = useState('');
     const [newPassword, setNewPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
     const [passwordError, setPasswordError] = useState('');
@@ -41,6 +42,10 @@ export const Layout: React.FC<LayoutProps> = ({
     const handleChangePassword = async () => {
         setPasswordError('');
         setPasswordSuccess(false);
+        if (!currentPassword) {
+            setPasswordError('Introduce tu contraseña actual.');
+            return;
+        }
         if (!newPassword || newPassword.length < 4) {
             setPasswordError('La contraseña debe tener al menos 4 caracteres.');
             return;
@@ -51,19 +56,20 @@ export const Layout: React.FC<LayoutProps> = ({
         }
 
         try {
-            const updatedUser = await api.updateUser({ ...currentUser, password: newPassword });
-            if (onUpdateUser) {
+            const updatedUser = await api.changeOwnPassword(currentPassword, newPassword);
+            if (onUpdateUser && updatedUser) {
                 onUpdateUser(updatedUser);
             }
             setPasswordSuccess(true);
             setTimeout(() => {
                 setIsPasswordModalOpen(false);
+                setCurrentPassword('');
                 setNewPassword('');
                 setConfirmPassword('');
                 setPasswordSuccess(false);
-            }, 2000);
-        } catch (error) {
-            setPasswordError('Error al cambiar la contraseña. Inténtalo de nuevo.');
+            }, 1500);
+        } catch (error: any) {
+            setPasswordError(error?.message || 'Error al cambiar la contraseña. Inténtalo de nuevo.');
         }
     };
     
@@ -444,6 +450,16 @@ export const Layout: React.FC<LayoutProps> = ({
                                                 {passwordError}
                                             </div>
                                         )}
+                                        <div>
+                                            <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Contraseña Actual</label>
+                                            <input 
+                                                type="password" 
+                                                value={currentPassword}
+                                                onChange={(e) => setCurrentPassword(e.target.value)}
+                                                className="w-full bg-gray-50 dark:bg-[#121212] border border-gray-200 dark:border-gray-800 rounded-xl px-4 py-3 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all"
+                                                placeholder="Tu contraseña actual"
+                                            />
+                                        </div>
                                         <div>
                                             <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Nueva Contraseña</label>
                                             <input 

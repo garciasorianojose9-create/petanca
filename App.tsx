@@ -42,12 +42,13 @@ import {
   addProfessionalFooter,
   getProfessionalTableStyles,
 } from "./src/utils/pdfUtils";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 function App() {
   // --- AUTH STATE ---
   const [users, setUsers] = useState<PlayerRegistry[]>([]);
-  // TEMPORARY: Use useState instead of useLocalStorage to debug persistence issues
   const [currentUser, setCurrentUser] = useState<PlayerRegistry | null>(null);
+  const [isCheckingAuth, setIsCheckingAuth] = useState(true);
   const [loginError, setLoginError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
@@ -63,8 +64,6 @@ function App() {
 
   // State for Competitions
   const [competitions, setCompetitions] = useState<Competition[]>([]);
-  // State for the currently active/selected competition context
-  // Store ID only to prevent stale state issues
   const [selectedCompetitionId, setSelectedCompetitionId] = useLocalStorage<
     string | null
   >("petanca_selected_competition_id", null);
@@ -72,33 +71,26 @@ function App() {
   const selectedCompetition =
     competitions.find((c) => c.id === selectedCompetitionId) || null;
 
-  // State for Registered Teams
   const [registeredTeams, setRegisteredTeams] = useState<Team[]>([]);
-
-  // State for Matches
   const [matches, setMatches] = useState<Match[]>([]);
-
-  // State for Groups
   const [groups, setGroups] = useState<Group[]>([]);
 
-  // Fetch initial data from API and poll
   const dataVersionRef = React.useRef<number>(-1);
 
   const fetchData = async (force = false) => {
     try {
-      // Check version first to save bandwidth
       const { version } = await api.getDataVersion();
       if (!force && version === dataVersionRef.current) {
-        return; // No changes
+        return;
       }
 
       const data = await api.getAllData();
       if (data) {
-        setUsers(data.users || []);
-        setCompetitions(data.competitions || []);
-        setRegisteredTeams(data.teams || []);
-        setMatches(data.matches || []);
-        setGroups(data.groups || []);
+        setUsers(Array.isArray(data.users) ? data.users : []);
+        setCompetitions(Array.isArray(data.competitions) ? data.competitions : []);
+        setRegisteredTeams(Array.isArray(data.teams) ? data.teams : []);
+        setMatches(Array.isArray(data.matches) ? data.matches : []);
+        setGroups(Array.isArray(data.groups) ? data.groups : []);
         dataVersionRef.current = version;
       }
     } catch (error) {
@@ -106,26 +98,46 @@ function App() {
     }
   };
 
+  // Verify existing HttpOnly session on mount
   useEffect(() => {
-    fetchData(true); // Force first fetch
-    const interval = setInterval(() => fetchData(false), 5000); // Poll every 5 seconds, but only fetch full data if version changed
-    return () => clearInterval(interval);
+    let active = true;
+    const initSession = async () => {
+      try {
+        const me = await api.getMe();
+        if (active && me) {
+          setCurrentUser(me);
+        }
+      } catch {
+        // Not logged in
+      } finally {
+        if (active) setIsCheckingAuth(false);
+      }
+    };
+    initSession();
+
+    const handleUnauthorized = () => {
+      setCurrentUser(null);
+      setUsers([]);
+      setCompetitions([]);
+      setRegisteredTeams([]);
+      setMatches([]);
+      setGroups([]);
+      dataVersionRef.current = -1;
+    };
+    window.addEventListener("petanca:unauthorized", handleUnauthorized);
+    return () => {
+      active = false;
+      window.removeEventListener("petanca:unauthorized", handleUnauthorized);
+    };
   }, []);
 
-  // Fix stale admin role on mount/update
+  // Poll data ONLY while authenticated
   useEffect(() => {
-    if (
-      currentUser &&
-      currentUser.username === "admin" &&
-      currentUser.role !== "ADMIN"
-    ) {
-      console.log("Auto-fixing admin role");
-      const fixedUser = { ...currentUser, role: "ADMIN" as UserRole };
-      setCurrentUser(fixedUser);
-      // Also force view to dashboard if they were stuck
-      setView(AppView.DASHBOARD);
-    }
-  }, [currentUser, setCurrentUser, setView]);
+    if (!currentUser) return;
+    fetchData(true);
+    const interval = setInterval(() => fetchData(false), 5000);
+    return () => clearInterval(interval);
+  }, [currentUser?.id]);
 
   // Apply theme on mount/change
   useEffect(() => {
@@ -140,55 +152,49 @@ function App() {
   const handleLogin = async (username: string, pass: string) => {
     setIsLoading(true);
     try {
-      console.log("Attempting login for:", username);
-      let apiResponse: any = await api.login(username, pass);
-      console.log("Raw API response:", apiResponse);
+      const apiResponse: any = await api.login(username, pass);
+      const user = apiResponse?.user || apiResponse;
 
-      // FIX 1: Handle nested response structure ({ success: true, user: {...} })
-      let user = apiResponse;
-      if (apiResponse && apiResponse.user && apiResponse.token) {
-        console.log("Detected wrapper object, extracting user data...");
-        user = apiResponse.user;
+      if (!user || !user.username) {
+        setLoginError("Error del servidor: Respuesta inválida.");
+        return;
       }
 
-      // FIX 2: Normalize role to uppercase (admin -> ADMIN)
       if (user.role) {
         user.role = user.role.toUpperCase();
       }
 
-      // Safety override: Ensure admin user always has ADMIN role
-      if (user.username === "admin") {
-        console.log("Forcing ADMIN role for user: admin");
-        user.role = "ADMIN";
-      }
-
-      if (!user || Object.keys(user).length === 0) {
-        console.error("Login returned empty object!");
-        setLoginError("Error del servidor: Respuesta vacía.");
-        setIsLoading(false);
-        return;
-      }
-
+      dataVersionRef.current = -1;
       setCurrentUser(user);
       setLoginError("");
 
-      // Redirect based on role
       if (user.role === "ADMIN") {
         setView(AppView.DASHBOARD);
       } else {
         setView(AppView.MATCH_CENTER);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Login error:", error);
-      setLoginError("Credenciales incorrectas. Intente de nuevo.");
+      setLoginError(error?.message || "Credenciales incorrectas. Intente de nuevo.");
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      await api.logout();
+    } catch {
+      // ignore network errors on logout
+    }
     setCurrentUser(null);
-    setView(AppView.DASHBOARD); // Reset view for next login
+    setUsers([]);
+    setCompetitions([]);
+    setRegisteredTeams([]);
+    setMatches([]);
+    setGroups([]);
+    dataVersionRef.current = -1;
+    setView(AppView.DASHBOARD);
     setLoginError("");
   };
 
@@ -243,9 +249,11 @@ function App() {
     try {
       const updated = await api.updateUser(updatedPlayer);
       setUsers((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
+      return updated;
     } catch (error: any) {
       console.error("Failed to update user", error);
       alert(error.message || "Error al actualizar usuario.");
+      throw error;
     }
   };
 
@@ -1237,23 +1245,26 @@ function App() {
 
   // --- RENDER LOGIC ---
 
+  if (isCheckingAuth) {
+    return (
+      <div className="h-screen supports-[height:100dvh]:h-[100dvh] flex flex-col items-center justify-center bg-[#221210] text-white font-display gap-3">
+        <div className="size-10 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+        <p className="text-sm text-[#cb9090]">Verificando sesión segura...</p>
+      </div>
+    );
+  }
+
   if (
     !currentUser ||
     Object.keys(currentUser).length === 0 ||
     !currentUser.username
   ) {
-    if (currentUser && Object.keys(currentUser).length === 0) {
-      console.warn("Detected empty currentUser object, forcing logout");
-      setCurrentUser(null);
-    }
     return (
       <Login onLogin={handleLogin} error={loginError} isLoading={isLoading} />
     );
   }
 
-  // Force effective role for rendering logic
-  const effectiveRole =
-    currentUser.username === "admin" ? "ADMIN" : currentUser.role;
+  const effectiveRole = currentUser.role;
 
   const renderView = () => {
     switch (currentView) {
@@ -1480,24 +1491,9 @@ function App() {
       selectedCompetition={selectedCompetition}
       matches={matches}
     >
-      {renderView()}
-
-      {/* Emergency Reset Button (Only visible if something is likely wrong) */}
-      {currentUser.username === "admin" &&
-        effectiveRole !== currentUser.role && (
-          <div className="fixed bottom-4 right-4 z-50 bg-red-600 text-white p-4 rounded-lg shadow-xl flex flex-col gap-2">
-            <p className="text-xs font-bold">Role Mismatch Detected</p>
-            <button
-              onClick={() => {
-                localStorage.clear();
-                window.location.reload();
-              }}
-              className="bg-white text-red-600 px-3 py-1 rounded text-xs font-bold uppercase"
-            >
-              Hard Reset App
-            </button>
-          </div>
-        )}
+      <ErrorBoundary onReset={() => setView(effectiveRole === "ADMIN" ? AppView.DASHBOARD : AppView.MATCH_CENTER)}>
+        {renderView()}
+      </ErrorBoundary>
     </Layout>
   );
 }
