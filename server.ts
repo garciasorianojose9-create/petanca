@@ -1195,12 +1195,27 @@ async function startServer() {
       express.static(path.join(__dirname, 'dist'), {
         maxAge: '7d',
         etag: true,
+        setHeaders: (res, filePath) => {
+          if (filePath.endsWith('index.html')) {
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+          }
+        },
       })
     );
     app.get('*all', (_req, res) => {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       res.sendFile(path.join(__dirname, 'dist', 'index.html'));
     });
   }
+
+  // Catch malformed URL scanner requests (e.g. URIError: Failed to decode param '%c0') cleanly
+  app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+    if (err instanceof URIError || err?.status === 400) {
+      return res.status(400).json({ error: 'Solicitud mal formada.' });
+    }
+    console.error('Unhandled Express error:', err?.message || err);
+    return res.status(500).json({ error: 'Error interno del servidor.' });
+  });
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${PORT}`);
