@@ -112,6 +112,8 @@ export interface Competition {
     qualifiersCount?: number;
     qualificationRule?: 'top2' | 'top2_thirds';
     bestThirdsCount?: number;
+    mainBracketCount?: number;
+    consolationBracketCount?: number;
 }
 
 export type PlayerCategory = 'SENIOR 1' | 'SENIOR 2' | 'JUVENILE' | 'FEMININE' | 'ADMIN';

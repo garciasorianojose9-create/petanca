@@ -30,6 +30,9 @@ export const Bracket: React.FC<BracketProps> = ({ competition, matches, currentU
     }
 
     const isKnockout = competition.type === 'KNOCKOUT';
+    const hasConsolacionMatches = matches.some(m => (m.bracket || 'DIRECTA') === 'CONSOLACION');
+    const hasRepescaMatches = Boolean(competition.hasRepesca) || matches.some(m => m.bracket === 'REPESCA');
+    const showBracketSelector = isKnockout || hasConsolacionMatches || hasRepescaMatches;
     
     // Filter matches for the selected bracket
     let bracketMatches = matches.filter(m => {
@@ -39,7 +42,7 @@ export const Bracket: React.FC<BracketProps> = ({ competition, matches, currentU
 
         // Apply bracket selection (DIRECTA by default if undefined)
         const matchBracket = m.bracket || 'DIRECTA';
-        return matchBracket === selectedBracket || (m.round === 'Knockout Round 1' && selectedBracket === 'DIRECTA');
+        return matchBracket === selectedBracket;
     });
 
     // Group matches by round
@@ -171,24 +174,28 @@ export const Bracket: React.FC<BracketProps> = ({ competition, matches, currentU
                  <div className="mb-12 flex flex-col items-center justify-between w-full max-w-[1200px] mx-auto gap-6 md:flex-row">
                     <div className="text-center md:text-left">
                         <h1 className="text-2xl md:text-3xl font-bold text-white">Fase Eliminatoria</h1>
-                        <p className="text-[#cb9090] text-sm md:text-base">Fase Final - Eliminatoria Directa</p>
+                        <p className="text-[#cb9090] text-sm md:text-base">
+                            {hasConsolacionMatches ? 'Cuadro General y Consolación' : 'Fase Final - Eliminatoria Directa'}
+                        </p>
                     </div>
                     
-                    {isKnockout && (
+                    {showBracketSelector && (
                         <div className="flex flex-wrap justify-center gap-1 bg-[#2c1515] rounded-lg p-1 border border-[#492222]">
                             <button 
                                 onClick={() => setSelectedBracket('DIRECTA')}
                                 className={`px-3 py-1.5 md:px-4 md:py-2 rounded-md text-xs md:text-sm font-bold transition-colors ${selectedBracket === 'DIRECTA' ? 'bg-primary text-white' : 'text-[#cb9090] hover:text-white'}`}
                             >
-                                Directa
+                                {hasConsolacionMatches && !isKnockout ? 'Cuadro General' : 'Directa'}
                             </button>
-                            <button 
-                                onClick={() => setSelectedBracket('CONSOLACION')}
-                                className={`px-3 py-1.5 md:px-4 md:py-2 rounded-md text-xs md:text-sm font-bold transition-colors ${selectedBracket === 'CONSOLACION' ? 'bg-primary text-white' : 'text-[#cb9090] hover:text-white'}`}
-                            >
-                                Consolación
-                            </button>
-                            {competition.hasRepesca && (
+                            {(isKnockout || hasConsolacionMatches) && (
+                                <button 
+                                    onClick={() => setSelectedBracket('CONSOLACION')}
+                                    className={`px-3 py-1.5 md:px-4 md:py-2 rounded-md text-xs md:text-sm font-bold transition-colors ${selectedBracket === 'CONSOLACION' ? 'bg-primary text-white' : 'text-[#cb9090] hover:text-white'}`}
+                                >
+                                    Consolación
+                                </button>
+                            )}
+                            {hasRepescaMatches && (
                                 <button 
                                     onClick={() => setSelectedBracket('REPESCA')}
                                     className={`px-3 py-1.5 md:px-4 md:py-2 rounded-md text-xs md:text-sm font-bold transition-colors ${selectedBracket === 'REPESCA' ? 'bg-primary text-white' : 'text-[#cb9090] hover:text-white'}`}

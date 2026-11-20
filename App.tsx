@@ -28,9 +28,11 @@ import {
   generateInitialPouleMatches,
   generatePouleRoundMatches,
   generateNextPouleMatches,
+  sortSwissStandings,
 } from "./utils/tournamentUtils";
 import {
   generateKnockoutFirstRound,
+  generateSeededKnockoutFirstRound,
   generateNextKnockoutRound,
 } from "./utils/knockoutUtils";
 import jsPDF from "jspdf";
@@ -539,19 +541,18 @@ function App() {
         // First round
         let teamsToUse = compTeams;
         if (comp.type === "STANDARD") {
-          teamsToUse = compTeams.filter(t => t.status === "qualified");
+          teamsToUse = sortSwissStandings(compTeams.filter(t => t.status === "qualified"));
           if (teamsToUse.length === 0) {
              alert(
-                "No hay equipos clasificados para la Fase Final. Finaliza los grupos primero (Clasifica a los equipos en el cuadro General o en los Grupos)."
+                "No hay equipos clasificados para la Fase Final. Selecciona los equipos de General y Consolación primero."
              );
              return;
           }
         }
-        newPairings = generateKnockoutFirstRound(
-          teamsToUse,
-          competitionId,
-          availableCourts,
-        );
+        newPairings =
+          comp.type === "STANDARD"
+            ? generateSeededKnockoutFirstRound(teamsToUse, competitionId, availableCourts, "DIRECTA")
+            : generateKnockoutFirstRound(teamsToUse, competitionId, availableCourts);
         nextPhaseName = "Knockout Round 1";
       } else {
         // Next round
@@ -562,6 +563,9 @@ function App() {
         );
         if (newPairings.length > 0) {
           nextPhaseName = newPairings[0].round;
+        } else {
+          alert("No quedan más rondas por generar o hay partidas sin finalizar en la ronda actual.");
+          return;
         }
       }
     } else {
@@ -572,9 +576,10 @@ function App() {
       const rounds = new Set(swissMatches.map((m) => m.round));
       const nextRoundNum = rounds.size + 1;
 
-      const limitRounds = comp.totalRounds || 4;
+      const swissPhase = comp.phases?.find((p) => p.type === "SWISS");
+      const limitRounds = swissPhase?.totalRounds || comp.totalRounds || 4;
       if (nextRoundNum > limitRounds) {
-        alert("Max rounds reached for this format");
+        alert("Se alcanzó el máximo de rondas configuradas para el Suizo.");
         return;
       }
 
@@ -714,30 +719,33 @@ function App() {
         teamStats.set(t.id, { pts: 0, diff: 0, bh: 0, fbh: 0, opponents: new Set(), opponentsPts: [] });
       });
 
-      // Calculate Pts and Diff
+      // Calculate Pts and Diff (including BYE matches cleanly)
       phase1Matches.forEach((m) => {
-        const stats1 = teamStats.get(m.team1.id);
-        const stats2 = teamStats.get(m.team2.id);
+        const isTeam1Bye = m.team1.id.startsWith("bye");
+        const isTeam2Bye = m.team2.id.startsWith("bye");
+        const stats1 = !isTeam1Bye ? teamStats.get(m.team1.id) : undefined;
+        const stats2 = !isTeam2Bye ? teamStats.get(m.team2.id) : undefined;
 
-        if (stats1 && stats2 && m.score1 !== null && m.score2 !== null && m.score1 !== undefined && m.score2 !== undefined) {
+        if (m.score1 === null || m.score2 === null || m.score1 === undefined || m.score2 === undefined) {
+          return;
+        }
+
+        if (stats1) {
           stats1.diff += m.score1 - m.score2;
+          if (m.score1 > m.score2) stats1.pts += 1;
+          else if (m.score1 === m.score2) stats1.pts += 0.5;
+          if (!isTeam2Bye) stats1.opponents.add(m.team2.id);
+        }
+        if (stats2) {
           stats2.diff += m.score2 - m.score1;
-
-          if (m.score1 > m.score2) {
-            stats1.pts += 1;
-          } else if (m.score2 > m.score1) {
-            stats2.pts += 1;
-          } else {
-            stats1.pts += 0.5;
-            stats2.pts += 0.5;
-          }
-          stats1.opponents.add(m.team2.id);
-          stats2.opponents.add(m.team1.id);
+          if (m.score2 > m.score1) stats2.pts += 1;
+          else if (m.score2 === m.score1) stats2.pts += 0.5;
+          if (!isTeam1Bye) stats2.opponents.add(m.team1.id);
         }
       });
 
-      // Calculate BH
-      teamStats.forEach((stats, teamId) => {
+      // Calculate BH (Buchholz)
+      teamStats.forEach((stats) => {
         stats.opponents.forEach((oppId) => {
           const oppStats = teamStats.get(oppId);
           if (oppStats) {
@@ -747,8 +755,8 @@ function App() {
         });
       });
 
-      // Calculate fBH
-      teamStats.forEach((stats, teamId) => {
+      // Calculate FBH (Fine Buchholz)
+      teamStats.forEach((stats) => {
         stats.opponents.forEach((oppId) => {
           const oppStats = teamStats.get(oppId);
           if (oppStats) {
@@ -756,6 +764,18 @@ function App() {
           }
         });
       });
+
+      // Compute rank based on strict International Swiss order
+      const rankedCompTeams = sortSwissStandings(
+        compTeams.map((t) => {
+          const stats = teamStats.get(t.id);
+          return stats
+            ? { ...t, pts: stats.pts, diff: stats.diff, bh: stats.bh, fbh: stats.fbh }
+            : t;
+        })
+      );
+      const rankById = new Map<string, number>();
+      rankedCompTeams.forEach((t, idx) => rankById.set(t.id, idx + 1));
 
       // Apply updates to teams
       return currentTeams.map((t) => {
@@ -768,6 +788,7 @@ function App() {
               diff: stats.diff,
               bh: stats.bh,
               fbh: stats.fbh,
+              rank: rankById.get(t.id) || t.rank,
             };
           }
         }
@@ -1053,6 +1074,101 @@ function App() {
     }
   };
 
+  const handleStartFinalBrackets = async (
+    competitionId: string,
+    generalTeams: Team[],
+    consolationTeams: Team[],
+    generalCount: number,
+    consolationCount: number,
+  ) => {
+    const comp = competitions.find((c) => c.id === competitionId);
+    if (!comp) return;
+
+    let availableCourts: number[] = [];
+    if (
+      typeof comp.courtStart === "number" &&
+      typeof comp.courtEnd === "number" &&
+      comp.courtEnd >= comp.courtStart
+    ) {
+      availableCourts = Array.from(
+        { length: comp.courtEnd - comp.courtStart + 1 },
+        (_, i) => comp.courtStart! + i,
+      );
+    } else {
+      const needed = Math.max(4, Math.ceil((generalTeams.length + consolationTeams.length) / 2));
+      availableCourts = Array.from({ length: needed }, (_, i) => i + 1);
+    }
+
+    const generalMatchNeed = Math.max(1, Math.floor(generalTeams.length / 2));
+    const generalCourts = availableCourts.slice(0, generalMatchNeed);
+    const remainingCourts = availableCourts.slice(generalMatchNeed);
+    const consolationCourts = remainingCourts.length > 0 ? remainingCourts : availableCourts;
+
+    const generalMatches =
+      generalTeams.length >= 2
+        ? generateSeededKnockoutFirstRound(generalTeams, competitionId, generalCourts, "DIRECTA")
+        : [];
+
+    const consolationMatches =
+      consolationTeams.length >= 2
+        ? generateSeededKnockoutFirstRound(
+            consolationTeams,
+            competitionId,
+            consolationCourts,
+            "CONSOLACION",
+          )
+        : [];
+
+    const allNewMatches = [...generalMatches, ...consolationMatches];
+    if (allNewMatches.length === 0) {
+      alert("Se necesitan al menos 2 equipos en General o en Consolación para crear los cuadros.");
+      return;
+    }
+
+    const generalIds = new Set(generalTeams.map((t) => t.id));
+    const consolationIds = new Set(consolationTeams.map((t) => t.id));
+
+    const updatedRegistered = registeredTeams.map((t) => {
+      if (t.competitionId !== competitionId) return t;
+      if (generalIds.has(t.id) || consolationIds.has(t.id)) {
+        return { ...t, status: "qualified" as const };
+      }
+      return { ...t, status: "eliminated" as const };
+    });
+
+    const compHasGroupsGenerated = groups.some((g) => g.competitionId === competitionId);
+    const updatedPhases =
+      Array.isArray(comp.phases) && !compHasGroupsGenerated
+        ? comp.phases.filter((p) => p.type !== "POULES")
+        : comp.phases;
+
+    const updatedComp: Competition = {
+      ...comp,
+      currentPhase: "Knockout Round 1",
+      status: "LIVE",
+      mainBracketCount: generalCount,
+      consolationBracketCount: consolationCount,
+      qualifiersCount: generalCount,
+      phases: updatedPhases,
+    };
+
+    try {
+      setRegisteredTeams(updatedRegistered);
+      await api.updateTeamsBatch(
+        updatedRegistered.filter((t) => t.competitionId === competitionId),
+      );
+      await api.updateMatches(allNewMatches);
+      setMatches((prev) => [...prev, ...allNewMatches]);
+      await api.updateCompetition(updatedComp);
+      setCompetitions((prev) =>
+        prev.map((c) => (c.id === competitionId ? updatedComp : c)),
+      );
+    } catch (err) {
+      console.error("Failed to generate General/Consolation brackets:", err);
+      alert("Error al generar los cuadros General y Consolación.");
+    }
+  };
+
   const handleGenerateGroupRound = async (
     competitionId: string,
     round: number,
@@ -1283,6 +1399,8 @@ function App() {
             onSelectCompetition={handleSelectCompetition}
             onStartPhase2={handleStartPhase2}
             onStartPhase3={handleStartPhase3}
+            onStartFinalBrackets={handleStartFinalBrackets}
+            onUpdateCompetition={handleUpdateCompetition}
             onGenerateGroupRound={handleGenerateGroupRound}
             onStartCompetition={handleStartCompetition}
             onDeleteTeam={handleDeleteRegistration}
@@ -1319,7 +1437,7 @@ function App() {
               (t) => t.competitionId === selectedCompetition?.id,
             )}
             matches={matches.filter(
-              (m) => m.competitionId === selectedCompetition?.id && m.round.startsWith("Swiss"),
+              (m) => m.competitionId === selectedCompetition?.id,
             )}
           />
         );
@@ -1490,6 +1608,7 @@ function App() {
       onUpdateUser={setCurrentUser}
       selectedCompetition={selectedCompetition}
       matches={matches}
+      groups={groups}
     >
       <ErrorBoundary onReset={() => setView(effectiveRole === "ADMIN" ? AppView.DASHBOARD : AppView.MATCH_CENTER)}>
         {renderView()}

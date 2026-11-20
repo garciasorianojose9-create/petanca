@@ -8,6 +8,7 @@ import {
   addProfessionalFooter,
   getProfessionalTableStyles,
 } from "../src/utils/pdfUtils";
+import { sortSwissStandings } from "../utils/tournamentUtils";
 
 interface FinalClassificationModalProps {
   isOpen: boolean;
@@ -17,22 +18,37 @@ interface FinalClassificationModalProps {
   matches: Match[];
 }
 
+const getRoundNumeric = (roundStr: string): number => {
+  if (roundStr.startsWith("Knockout Round ")) {
+    return parseInt(roundStr.replace("Knockout Round ", "")) || 0;
+  }
+  const map: Record<string, number> = { QF: 1, SF: 2, F: 3 };
+  return map[roundStr] || 0;
+};
+
 // Helper to determine the latest round a team reached
 const getTeamProgress = (teamId: string, bracketMatches: Match[]) => {
   const teamM = bracketMatches.filter(m => m.team1.id === teamId || m.team2.id === teamId);
   if (teamM.length === 0) return { maxRound: 0, wonLast: false, isWinner: false };
   
-  const roundNums = teamM.map(m => parseInt(m.round.replace("Knockout Round ", "")) || 0);
+  const roundNums = teamM.map(m => getRoundNumeric(m.round));
   const maxRound = Math.max(...roundNums);
   
-  const lastMatch = teamM.find(m => parseInt(m.round.replace("Knockout Round ", "")) === maxRound);
-  if (!lastMatch || !lastMatch.score1 || !lastMatch.score2) return { maxRound, wonLast: false, isWinner: false };
+  const lastMatch = teamM.find(m => getRoundNumeric(m.round) === maxRound);
+  if (
+    !lastMatch ||
+    lastMatch.score1 === null ||
+    lastMatch.score1 === undefined ||
+    lastMatch.score2 === null ||
+    lastMatch.score2 === undefined
+  ) {
+    return { maxRound, wonLast: false, isWinner: false };
+  }
 
   const wonLast = (lastMatch.team1.id === teamId && lastMatch.score1 > lastMatch.score2) ||
                   (lastMatch.team2.id === teamId && lastMatch.score2 > lastMatch.score1);
 
-  // If they won their last match, and it's the absolute final of the bracket, they are the overall winner
-  const allRounds = bracketMatches.map(m => parseInt(m.round.replace("Knockout Round ", "")) || 0);
+  const allRounds = bracketMatches.map(m => getRoundNumeric(m.round));
   const maxOverallRound = Math.max(...allRounds);
   const isWinner = wonLast && maxRound === maxOverallRound;
 
@@ -51,42 +67,54 @@ export const FinalClassificationModal: React.FC<FinalClassificationModalProps> =
   useEffect(() => {
     if (!isOpen) return;
 
-    // Separate teams by bracket or use overall points
-    if (competition.type !== "KNOCKOUT") {
-      const sorted = [...teams].sort((a, b) => {
-          if ((b.pts || 0) !== (a.pts || 0)) return (b.pts || 0) - (a.pts || 0);
-          if ((b.bh || 0) !== (a.bh || 0)) return (b.bh || 0) - (a.bh || 0);
-          if ((b.fbh || 0) !== (a.fbh || 0)) return (b.fbh || 0) - (a.fbh || 0);
-          return (b.diff || 0) - (a.diff || 0);
-      });
+    const knockoutMatches = matches.filter(
+      m => m.round.startsWith("Knockout") || m.round === "QF" || m.round === "SF" || m.round === "F"
+    );
+
+    if (knockoutMatches.length === 0) {
+      const sorted = sortSwissStandings(teams);
       setSortedTeams(sorted.map(t => ({ team: t, label: "Fase 1" })));
     } else {
       let finalOrder: { team: Team; label: string; score: number }[] = [];
-      const brackets = ['DIRECTA', 'CONSOLACION', 'REPESCA'];
+      const brackets: { key: "DIRECTA" | "CONSOLACION" | "REPESCA"; label: string }[] = [
+        { key: "DIRECTA", label: competition.type === "KNOCKOUT" ? "Directa" : "Cuadro General" },
+        { key: "CONSOLACION", label: "Consolación" },
+        { key: "REPESCA", label: "Repesca" },
+      ];
       
-      brackets.forEach((bracket, bIdx) => {
-        const bMatches = matches.filter(m => m.bracket === bracket);
+      brackets.forEach(({ key, label }, bIdx) => {
+        const bMatches = knockoutMatches.filter(m => (m.bracket || "DIRECTA") === key);
         if (bMatches.length === 0) return;
         
         const bTeams = teams.filter(t => bMatches.some(m => m.team1.id === t.id || m.team2.id === t.id));
         
         const scoredTeams = bTeams.map(t => {
           const prog = getTeamProgress(t.id, bMatches);
-          // Score formula: bracket weight + round weight + win bonus
-          // DIRECTA > CONSOLACION > REPESCA
           const bracketScore = (3 - bIdx) * 10000;
           const roundScore = prog.maxRound * 100;
           const winScore = prog.wonLast ? 50 : 0;
-          return { team: t, label: bracket, score: bracketScore + roundScore + winScore, prog };
+          return { team: t, label, score: bracketScore + roundScore + winScore };
         });
 
-        scoredTeams.sort((a, b) => b.score - a.score);
+        scoredTeams.sort((a, b) => {
+          if (b.score !== a.score) return b.score - a.score;
+          if ((b.team.pts || 0) !== (a.team.pts || 0)) return (b.team.pts || 0) - (a.team.pts || 0);
+          if ((b.team.bh || 0) !== (a.team.bh || 0)) return (b.team.bh || 0) - (a.team.bh || 0);
+          if ((b.team.fbh || 0) !== (a.team.fbh || 0)) return (b.team.fbh || 0) - (a.team.fbh || 0);
+          return (b.team.diff || 0) - (a.team.diff || 0);
+        });
         finalOrder = [...finalOrder, ...scoredTeams];
       });
 
-      // Find teams that didn't play in knockout
-      const unplayedTeams = teams.filter(t => !finalOrder.some(f => f.team.id === t.id));
-      const unplayedScored = unplayedTeams.map(t => ({ team: t, label: "No Clasificado", score: 0 }));
+      // Teams that stayed in Swiss without entering General/Consolacion
+      const unplayedTeams = sortSwissStandings(
+        teams.filter(t => !finalOrder.some(f => f.team.id === t.id))
+      );
+      const unplayedScored = unplayedTeams.map(t => ({
+        team: t,
+        label: competition.type === "KNOCKOUT" ? "No Clasificado" : "Fase Suizo",
+        score: 0
+      }));
 
       setSortedTeams([...finalOrder, ...unplayedScored].map(item => ({ team: item.team, label: item.label })));
     }
@@ -110,7 +138,7 @@ export const FinalClassificationModal: React.FC<FinalClassificationModalProps> =
 
   const handleDownload = () => {
     const doc = new jsPDF();
-    addProfessionalHeader(doc, competition.name, "Clasificación Final Definita");
+    addProfessionalHeader(doc, competition.name, "Clasificación Final Definitiva");
 
     let currentY = 40;
 

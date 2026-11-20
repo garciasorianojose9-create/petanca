@@ -17,6 +17,8 @@ import { PouleSheet } from "./PouleSheet";
 import { Bracket } from "./Bracket";
 import { MatchTimer } from "../components/MatchTimer";
 import { ConfirmModal } from "../components/ConfirmModal";
+import { BracketSplitModal } from "../components/BracketSplitModal";
+import { competitionHasGroupPhase, sortSwissStandings } from "../utils/tournamentUtils";
 
 interface DashboardProps {
   competition: Competition | null;
@@ -28,6 +30,13 @@ interface DashboardProps {
   onSelectCompetition: (comp: Competition) => void;
   onStartPhase2?: (competitionId: string) => void;
   onStartPhase3?: (competitionId: string) => void;
+  onStartFinalBrackets?: (
+    competitionId: string,
+    generalTeams: Team[],
+    consolationTeams: Team[],
+    generalCount: number,
+    consolationCount: number,
+  ) => Promise<void> | void;
   onStartCompetition?: (competitionId: string) => void;
   onUpdateCompetition?: (comp: Competition) => void;
   onDeleteTeam?: (teamId: string) => void;
@@ -73,6 +82,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onSelectCompetition,
   onStartPhase2,
   onStartPhase3,
+  onStartFinalBrackets,
   onStartCompetition,
   onUpdateCompetition,
   onDeleteTeam,
@@ -95,8 +105,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const [isManualPairingOpen, setIsManualPairingOpen] = useState(false);
 
   // Phase Management State
+  const hasGroupPhase = competitionHasGroupPhase(competition, groups?.length || 0);
+  const swissPhaseConfig = competition?.phases?.find((p) => p.type === "SWISS");
   const [currentRound, setCurrentRound] = useState(1);
-  const totalRounds = competition?.totalRounds || 4;
+  const totalRounds = swissPhaseConfig?.totalRounds || competition?.totalRounds || 4;
   const [phase1Status, setPhase1Status] = useState<
     "PENDING" | "LIVE" | "COMPLETED"
   >("PENDING");
@@ -115,6 +127,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const [localCourtEnd, setLocalCourtEnd] = useState<number | "">("");
   const [showAddMatchModal, setShowAddMatchModal] = useState(false);
   const [showFinalClassificationModal, setShowFinalClassificationModal] = useState(false);
+  const [showBracketSplitModal, setShowBracketSplitModal] = useState(false);
+  const [phase3BracketFilter, setPhase3BracketFilter] = useState<"ALL" | "DIRECTA" | "CONSOLACION">("ALL");
 
   // Sync courts
   useEffect(() => {
@@ -140,33 +154,35 @@ export const Dashboard: React.FC<DashboardProps> = ({
     }
   };
 
-  // Sync state with competition currentPhase
+  // Sync state with competition currentPhase and configured phases
   useEffect(() => {
     if (competition) {
       const phase = competition.currentPhase || "";
+      const hasKnockoutMatches = Boolean(
+        matches?.some((m) => m.competitionId === competition.id && m.round.startsWith("Knockout")),
+      );
       if (
         competition.type !== "KNOCKOUT" &&
-        (phase.includes("Knockout") || phase.includes("Phase 3"))
+        (phase.includes("Knockout") || phase.includes("Phase 3") || hasKnockoutMatches)
       ) {
-        setIsPhase2Started(true);
+        setIsPhase2Started(hasGroupPhase);
         setIsPhase3Started(true);
         setPhase1Status("COMPLETED");
         const roundMatch = phase.match(/Round (\d+)/);
         if (roundMatch) setCurrentRound(parseInt(roundMatch[1]));
-        // Set tab to phase3 if we are on generic overview tab and it just upgraded
         setActiveTab((prev) =>
           prev === "overview" || prev === "phase2" ? "phase3" : prev,
         );
       } else if (
-        phase.includes("Poules") ||
-        phase.includes("Grupos") ||
-        phase.includes("Finals") ||
-        phase.includes("Bracket")
+        hasGroupPhase &&
+        (phase.includes("Poules") ||
+          phase.includes("Grupos") ||
+          phase.includes("Finals") ||
+          phase.includes("Bracket"))
       ) {
         setIsPhase2Started(true);
         setIsPhase3Started(false);
         setPhase1Status("COMPLETED");
-        // Only force tab change if we are not already on a valid tab for this phase
         setActiveTab((prev) => (prev === "overview" ? "phase2" : prev));
       } else if (
         phase.includes("Swiss") ||
@@ -176,7 +192,6 @@ export const Dashboard: React.FC<DashboardProps> = ({
         setIsPhase2Started(false);
         setIsPhase3Started(false);
         setPhase1Status("LIVE");
-        // Try to extract round number if format is "Swiss Round X" or "Knockout Round X"
         const roundMatch = phase.match(/Round (\d+)/);
         if (roundMatch) {
           setCurrentRound(parseInt(roundMatch[1]));
@@ -185,16 +200,23 @@ export const Dashboard: React.FC<DashboardProps> = ({
         }
       } else if (phase === "Registration") {
         setIsPhase2Started(false);
-        setPhase1Status("PENDING"); // Changed from LIVE to PENDING
-        setCurrentRound(0); // Set to 0 to indicate not started
+        setIsPhase3Started(false);
+        setPhase1Status("PENDING");
+        setCurrentRound(0);
       } else {
-        // Default
         setIsPhase2Started(false);
-        setPhase1Status("LIVE");
-        setCurrentRound(1);
+        setIsPhase3Started(false);
+        setPhase1Status(competition.status === "UPCOMING" ? "PENDING" : "LIVE");
+        setCurrentRound(competition.status === "UPCOMING" ? 0 : 1);
       }
     }
-  }, [competition?.id, competition?.currentPhase]);
+  }, [competition?.id, competition?.currentPhase, hasGroupPhase, matches?.length]);
+
+  useEffect(() => {
+    if (!hasGroupPhase && activeTab === "phase2") {
+      setActiveTab("overview");
+    }
+  }, [hasGroupPhase, activeTab]);
 
   const handleCompetitionChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const selectedId = e.target.value;
@@ -310,6 +332,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
         }
       } else {
         setPhase1Status("COMPLETED");
+        if (!hasGroupPhase) {
+          setShowBracketSplitModal(true);
+        }
       }
     }
   };
@@ -431,13 +456,19 @@ export const Dashboard: React.FC<DashboardProps> = ({
     setTeamToDelete(teamId);
   };
 
-  // Sort teams strictly by federative rules for Phase 1: Points > Buchholz (SI) > Fine Buchholz (FSI) > Diff
-  const sortedTeams = [...teams].sort((a, b) => {
-    if ((b.pts || 0) !== (a.pts || 0)) return (b.pts || 0) - (a.pts || 0);
-    if ((b.bh || 0) !== (a.bh || 0)) return (b.bh || 0) - (a.bh || 0);
-    if ((b.fbh || 0) !== (a.fbh || 0)) return (b.fbh || 0) - (a.fbh || 0);
-    return (b.diff || 0) - (a.diff || 0);
-  });
+  // Sort teams strictly by International Swiss rules: Points > Buchholz (BH) > Fine Buchholz (FBH) > Diff
+  const sortedTeams = sortSwissStandings(teams);
+
+  const mainCutCount =
+    typeof competition.mainBracketCount === "number"
+      ? competition.mainBracketCount
+      : competition.qualifiersCount || 8;
+  const consolationCutCount =
+    typeof competition.consolationBracketCount === "number"
+      ? competition.consolationBracketCount
+      : hasGroupPhase
+        ? 0
+        : 8;
 
   const activeMatchesCount =
     matches?.filter(
@@ -449,17 +480,23 @@ export const Dashboard: React.FC<DashboardProps> = ({
             m.round.includes(currentRound.toString()))),
     ).length || 0;
 
-  const currentViewMatches = matches?.filter(
-    (m) =>
-      selectedMatchFilter === "ALL" 
-        ? true 
-        : selectedMatchFilter !== "CURRENT_ROUND" 
-          ? m.round === selectedMatchFilter
-          : m.round ===
-            (competition.type === "KNOCKOUT" || activeTab === "phase3"
-              ? `Knockout Round ${currentRound}`
-              : `Swiss Round ${currentRound}`)
-  ) || [];
+  const currentViewMatches =
+    matches?.filter((m) => {
+      const roundOk =
+        selectedMatchFilter === "ALL"
+          ? true
+          : selectedMatchFilter !== "CURRENT_ROUND"
+            ? m.round === selectedMatchFilter
+            : m.round ===
+              (competition.type === "KNOCKOUT" || activeTab === "phase3"
+                ? `Knockout Round ${currentRound}`
+                : `Swiss Round ${currentRound}`);
+      if (!roundOk) return false;
+      if (activeTab === "phase3" && phase3BracketFilter !== "ALL") {
+        return (m.bracket || "DIRECTA") === phase3BracketFilter;
+      }
+      return true;
+    }) || [];
 
   return (
     <div className="flex flex-col h-full max-w-[1600px] mx-auto w-full px-4 md:px-8 py-6 gap-6 relative">
@@ -575,9 +612,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   ? "Registro"
                   : competition.type === "KNOCKOUT"
                     ? "Eliminatorias"
-                    : isPhase2Started
-                      ? "Fase 2: Grupos"
-                      : "Fase 1: Sistema Suizo"}
+                    : isPhase3Started
+                      ? "General y Consolación"
+                      : hasGroupPhase && isPhase2Started
+                        ? "Fase 2: Grupos"
+                        : "Fase 1: Suizo Internacional"}
               </span>
             </div>
             <div className="flex items-center gap-4">
@@ -657,7 +696,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
           <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
             <div>
-              <h1 className="text-3xl md:text-4xl font-black tracking-tight text-gray-900 dark:text-white flex items-center gap-3">
+              <h1 className="text-3xl md:text-4xl font-black tracking-tight text-gray-900 dark:text-white flex items-center gap-3 flex-wrap">
                 {competition.status === "UPCOMING" ? (
                   <>
                     Registro <span className="text-blue-500">Abierto</span>
@@ -666,26 +705,27 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   <>
                     Eliminatorias <span className="text-primary">En Juego</span>
                   </>
-                ) : isPhase2Started ? (
+                ) : isPhase3Started ? (
+                  <>
+                    General y Consolación <span className="text-primary">En Juego</span>
+                  </>
+                ) : hasGroupPhase && isPhase2Started ? (
                   <>
                     Fase 2 <span className="text-primary">En Curso</span>
                   </>
                 ) : (
                   <>
-                    {competition.type === "KNOCKOUT"
-                      ? "Cuadro de Eliminación"
-                      : "Fase 1"}
-                    {competition.type !== "KNOCKOUT" &&
-                      phase1Status === "LIVE" &&
+                    Suizo Internacional
+                    {phase1Status === "LIVE" &&
                       currentRound > 0 && (
-                        <span className="text-xl align-middle text-gray-400 font-medium ml-2">
+                        <span className="text-xl align-middle text-gray-400 font-medium ml-2 font-mono tabular-nums">
                           (Ronda {currentRound}/{totalRounds})
                         </span>
                       )}
                     <span className="material-symbols-outlined text-3xl text-gray-300 mx-2">
                       arrow_right_alt
                     </span>
-                    Fase 2
+                    {hasGroupPhase ? "Grupos" : "General y Consolación"}
                   </>
                 )}
               </h1>
@@ -694,11 +734,15 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   ? "La competición está en fase de registro. Espera a que todos los equipos hagan check-in antes de comenzar."
                   : competition.type === "KNOCKOUT"
                     ? "El cuadro de eliminatorias está activo. Los resultados se actualizan en tiempo real."
-                    : isPhase2Started
-                      ? "La fase de grupos está activa. Los resultados de la Fase 1 siguen disponibles para consulta."
-                      : phase1Status === "COMPLETED"
-                        ? "Fase 1 finalizada. Revisa la clasificación final y confirma los grupos para comenzar la Fase 2."
-                        : "Competición en curso. Gestiona los emparejamientos y resultados de la ronda actual antes de avanzar."}
+                    : isPhase3Started
+                      ? "Los cuadros General y Consolación están en marcha. Puedes avanzar rondas y consultar el histórico del Suizo."
+                      : hasGroupPhase && isPhase2Started
+                        ? "La fase de grupos está activa. Los resultados de la Fase 1 siguen disponibles para consulta."
+                        : phase1Status === "COMPLETED"
+                          ? hasGroupPhase
+                            ? "Suizo finalizado. Revisa la clasificación para iniciar los grupos o saltar directo a los cuadros finales."
+                            : "Suizo Internacional finalizado. Elige cuántos equipos pasan a Cuadro General y Consolación."
+                          : "Competición en curso. Gestiona los emparejamientos y resultados de la ronda actual antes de avanzar."}
               </p>
             </div>
             <div className="flex items-center gap-3">
@@ -739,15 +783,21 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   </div>
                   <span
                     className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border transition-all ${
-                      isPhase2Started
+                      (hasGroupPhase ? isPhase2Started : isPhase3Started)
                         ? "bg-yellow-100 text-yellow-700 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-400 dark:border-yellow-800"
                         : "bg-gray-100 text-gray-500 border-gray-200 dark:bg-[#1b0f0d] dark:text-gray-600 dark:border-[#3a201d]"
                     }`}
                   >
                     <span className="material-symbols-outlined text-sm">
-                      {isPhase2Started ? "play_circle" : "pending"}
+                      {(hasGroupPhase ? isPhase2Started : isPhase3Started) ? "play_circle" : "pending"}
                     </span>
-                    {isPhase2Started ? "Fase 2 En Vivo" : "Fase 2 Pendiente"}
+                    {hasGroupPhase
+                      ? isPhase2Started
+                        ? "Fase 2 En Vivo"
+                        : "Fase 2 Pendiente"
+                      : isPhase3Started
+                        ? "Cuadros En Vivo"
+                        : "Cuadros Pendientes"}
                   </span>
                 </>
               )}
@@ -755,11 +805,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </div>
         </div>
 
-        {/* Navigation Tabs */}
+        {/* Navigation Tabs (Strictly reflect configured phases) */}
         <div className="flex overflow-x-auto pb-1 gap-2 border-b border-gray-200 dark:border-[#3a201d]">
           <button
             onClick={() => setActiveTab("overview")}
-            className={`flex items-center gap-2 px-4 py-2 text-sm font-bold border-b-2 transition-colors whitespace-nowrap ${
+            className={`flex items-center gap-2 px-4 py-2 text-sm font-bold border-b-2 transition-colors whitespace-nowrap shrink-0 ${
               activeTab === "overview"
                 ? "border-primary text-primary"
                 : "border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
@@ -772,23 +822,23 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </button>
           <button
             onClick={() => setActiveTab("phase1")}
-            className={`flex items-center gap-2 px-4 py-2 text-sm font-bold border-b-2 transition-colors whitespace-nowrap ${
+            className={`flex items-center gap-2 px-4 py-2 text-sm font-bold border-b-2 transition-colors whitespace-nowrap shrink-0 ${
               activeTab === "phase1"
                 ? "border-primary text-primary"
                 : "border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
             }`}
           >
             <span className="material-symbols-outlined text-[18px]">
-              account_tree
+              {competition.type === "KNOCKOUT" ? "account_tree" : "format_list_numbered"}
             </span>
             {competition.type === "KNOCKOUT"
               ? "Cuadro"
               : `Fase 1: Suizo ${phase1Status === "COMPLETED" ? "(Final)" : phase1Status === "PENDING" ? "(Preparación)" : "(En Juego)"}`}
           </button>
-          {competition.type !== "KNOCKOUT" && (
+          {competition.type !== "KNOCKOUT" && hasGroupPhase && (
             <button
               onClick={() => setActiveTab("phase2")}
-              className={`flex items-center gap-2 px-4 py-2 text-sm font-bold border-b-2 transition-colors whitespace-nowrap ${
+              className={`flex items-center gap-2 px-4 py-2 text-sm font-bold border-b-2 transition-colors whitespace-nowrap shrink-0 ${
                 activeTab === "phase2"
                   ? "border-primary text-primary"
                   : "border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
@@ -808,7 +858,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
           {competition.type !== "KNOCKOUT" && (
             <button
               onClick={() => setActiveTab("phase3")}
-              className={`flex items-center gap-2 px-4 py-2 text-sm font-bold border-b-2 transition-colors whitespace-nowrap ${
+              className={`flex items-center gap-2 px-4 py-2 text-sm font-bold border-b-2 transition-colors whitespace-nowrap shrink-0 ${
                 activeTab === "phase3"
                   ? "border-primary text-primary"
                   : "border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
@@ -817,7 +867,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <span className="material-symbols-outlined text-[18px]">
                 account_tree
               </span>
-              Fase 3: Cuadro Final {isPhase3Started && "(Activa)"}
+              {hasGroupPhase ? "Fase 3: Cuadro Final" : "Fase 2: General y Consolación"}{" "}
+              {isPhase3Started && "(Activa)"}
             </button>
           )}
         </div>
@@ -868,12 +919,18 @@ export const Dashboard: React.FC<DashboardProps> = ({
             className="bg-white dark:bg-[#1b0f0d] p-4 rounded-xl border border-gray-200 dark:border-[#3a201d] shadow-sm hover:shadow-md transition-shadow"
           >
             <p className="text-sm font-medium text-gray-500 dark:text-gray-400">
-              {competition.type === "KNOCKOUT" ? "Formato" : "Grupos a Crear"}
+              {competition.type === "KNOCKOUT"
+                ? "Formato"
+                : hasGroupPhase
+                  ? "Grupos a Crear"
+                  : "Plazas Cuadros"}
             </p>
-            <p className="text-2xl font-bold text-gray-900 dark:text-white">
+            <p className="text-2xl font-bold text-gray-900 dark:text-white font-mono tabular-nums">
               {competition.type === "KNOCKOUT"
                 ? "Eliminatoria"
-                : Math.ceil((competition.qualifiersCount || 16) / 4)}
+                : hasGroupPhase
+                  ? Math.ceil((competition.qualifiersCount || 16) / 4)
+                  : `${mainCutCount} Gen · ${consolationCutCount} Con`}
             </p>
           </motion.div>
           <motion.div
@@ -887,7 +944,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <span className="material-symbols-outlined text-lg">schema</span>
               {competition.type === "KNOCKOUT"
                 ? "Eliminatoria Directa"
-                : `Suizo (${totalRounds} Rondas)`}
+                : `Suizo (${totalRounds}R) → ${hasGroupPhase ? "Grupos" : "Gen/Con"}`}
             </div>
           </motion.div>
         </motion.div>
@@ -1016,8 +1073,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
                                                 ${team.id === "1" ? "bg-primary/5 dark:bg-primary/10 border-l-primary" : ""}
                                             `}
                           >
-                            <td className="px-4 py-3 font-bold text-center text-gray-900 dark:text-white">
-                              {team.rank}
+                            <td className="px-4 py-3 font-bold text-center text-gray-900 dark:text-white font-mono tabular-nums">
+                              {idx + 1}
                             </td>
                             <td className="px-4 py-3 font-medium text-gray-900 dark:text-white">
                               <div className="flex flex-col">
@@ -1029,29 +1086,29 @@ export const Dashboard: React.FC<DashboardProps> = ({
                             </td>
                             {competition.status !== "UPCOMING" && (
                               <>
-                                <td className="px-4 py-3 text-center text-gray-600 dark:text-gray-400 font-medium">
+                                <td className="px-4 py-3 text-center text-gray-600 dark:text-gray-400 font-medium font-mono tabular-nums">
                                   {played}
                                 </td>
-                                <td className="px-4 py-3 text-center text-green-600 dark:text-green-500 font-bold">
+                                <td className="px-4 py-3 text-center text-green-600 dark:text-green-500 font-bold font-mono tabular-nums">
                                   {won}
                                 </td>
-                                <td className="px-4 py-3 text-center text-red-500 dark:text-red-400 font-medium">
+                                <td className="px-4 py-3 text-center text-red-500 dark:text-red-400 font-medium font-mono tabular-nums">
                                   {lost}
                                 </td>
-                                <td className="px-4 py-3 text-center font-black text-gray-900 dark:text-white bg-gray-50 dark:bg-[#2a1a18] border-x border-gray-100 dark:border-[#3a201d]">
-                                  {team.pts}
+                                <td className="px-4 py-3 text-center font-black text-gray-900 dark:text-white bg-gray-50 dark:bg-[#2a1a18] border-x border-gray-100 dark:border-[#3a201d] font-mono tabular-nums">
+                                  {team.pts || 0}
                                 </td>
-                                <td className="px-4 py-3 text-center text-gray-500 dark:text-gray-400">
-                                  {team.bh}
+                                <td className="px-4 py-3 text-center text-gray-500 dark:text-gray-400 font-mono tabular-nums">
+                                  {team.bh || 0}
                                 </td>
-                                <td className="px-4 py-3 text-center text-gray-500 dark:text-gray-400">
+                                <td className="px-4 py-3 text-center text-gray-500 dark:text-gray-400 font-mono tabular-nums">
                                   {team.fbh || 0}
                                 </td>
                                 <td
-                                  className={`px-4 py-3 text-center font-medium ${team.diff && team.diff > 0 ? "text-green-600 dark:text-green-400" : "text-red-500"}`}
+                                  className={`px-4 py-3 text-center font-medium font-mono tabular-nums ${team.diff && team.diff > 0 ? "text-green-600 dark:text-green-400" : "text-red-500"}`}
                                 >
                                   {team.diff && team.diff > 0 ? "+" : ""}
-                                  {team.diff}
+                                  {team.diff || 0}
                                 </td>
                               </>
                             )}
@@ -1076,7 +1133,21 @@ export const Dashboard: React.FC<DashboardProps> = ({
                                     En Juego
                                   </span>
                                 )
-                              ) : idx < 16 ? (
+                              ) : !hasGroupPhase ? (
+                                idx < mainCutCount ? (
+                                  <span className="text-xs font-bold text-emerald-700 dark:text-emerald-400">
+                                    General
+                                  </span>
+                                ) : idx < mainCutCount + consolationCutCount ? (
+                                  <span className="text-xs font-bold text-amber-700 dark:text-amber-400">
+                                    Consolación
+                                  </span>
+                                ) : (
+                                  <span className="text-xs font-medium text-gray-400">
+                                    Fuera
+                                  </span>
+                                )
+                              ) : idx < mainCutCount ? (
                                 <span className="inline-flex items-center justify-center size-6 rounded-full bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-400">
                                   <span className="material-symbols-outlined text-sm">
                                     check
@@ -1105,19 +1176,34 @@ export const Dashboard: React.FC<DashboardProps> = ({
                               </button>
                             </td>
                           </motion.tr>
-                          {idx === (competition.qualifiersCount || 16) - 1 && competition.status !== "UPCOMING" && (
+                          {idx === mainCutCount - 1 && competition.status !== "UPCOMING" && (
                             <tr
-                              key="cutoff"
+                              key="cutoff-main"
                               className="bg-primary text-white text-xs font-bold uppercase tracking-wider"
                             >
                               <td
                                 className="px-4 py-1 text-center"
                                 colSpan={11}
                               >
-                                Corte de Clasificación (Top {competition.qualifiersCount || 16})
+                                {hasGroupPhase
+                                  ? `Corte de Clasificación (Top ${mainCutCount})`
+                                  : `Corte Cuadro General (Top ${mainCutCount})`}
                               </td>
                             </tr>
                           )}
+                          {!hasGroupPhase &&
+                            consolationCutCount > 0 &&
+                            idx === mainCutCount + consolationCutCount - 1 &&
+                            competition.status !== "UPCOMING" && (
+                              <tr
+                                key="cutoff-consolation"
+                                className="bg-amber-600 text-white text-xs font-bold uppercase tracking-wider"
+                              >
+                                <td className="px-4 py-1 text-center" colSpan={11}>
+                                  Corte Consolación (Puestos {mainCutCount + 1} a {mainCutCount + consolationCutCount})
+                                </td>
+                              </tr>
+                            )}
                         </React.Fragment>
                       );
                     })}
@@ -1127,8 +1213,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
             </motion.div>
           )}
 
-        {/* Center Actions (Only in Overview) */}
-        {activeTab === "overview" && !isPhase2Started && (
+        {/* Center Actions (Only in Overview when final phases haven't started) */}
+        {activeTab === "overview" && !isPhase2Started && !isPhase3Started && (
           <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
@@ -1252,9 +1338,17 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     Fase 1 Completada
                   </h4>
                   <p className="text-xs text-gray-500">
-                    Todos los resultados validados. Ahora puedes proceder a la
-                    configuración de la Fase 2.
+                    {hasGroupPhase
+                      ? "Todos los resultados validados. Ahora puedes iniciar Grupos o pasar directo a General y Consolación."
+                      : "Suizo Internacional completado. Configura los equipos que pasan a Cuadro General y Consolación."}
                   </p>
+                  <button
+                    onClick={() => setShowBracketSplitModal(true)}
+                    className="w-full py-2.5 px-3 bg-primary hover:bg-primary-hover text-white rounded-lg text-xs font-bold transition-colors flex items-center justify-center gap-1.5"
+                  >
+                    <span className="material-symbols-outlined text-base">account_tree</span>
+                    Elegir General y Consolación
+                  </button>
                 </div>
               )}
             </div>
@@ -1315,29 +1409,33 @@ export const Dashboard: React.FC<DashboardProps> = ({
             <div className="px-6 py-4 border-b border-gray-200 dark:border-[#3a201d] flex justify-between items-center bg-gray-50 dark:bg-[#251614] rounded-t-xl">
               <h3 className="font-bold text-lg flex items-center gap-2 text-gray-900 dark:text-white">
                 <span className="material-symbols-outlined text-primary">
-                  {competition.type === "KNOCKOUT" || activeTab === "phase3"
-                    ? "sports_handball"
-                    : "grid_view"}
+                  {activeTab === "phase2" ? "grid_view" : "sports_handball"}
                 </span>
-                {competition.type === "KNOCKOUT" || activeTab === "phase3"
-                  ? "Partidas"
-                  : isPhase2Started
+                {activeTab === "phase2"
+                  ? isPhase2Started
                     ? "Grupos Activos"
-                    : "Vista Previa de Grupos"}
+                    : "Vista Previa de Grupos"
+                  : "Partidas"}
               </h3>
               <div className="flex items-center gap-2">
-                {!isPhase2Started &&
-                  competition.type !== "KNOCKOUT" &&
-                  activeTab !== "phase3" && (
-                    <>
-                      <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Arrastrar para Mover
-                      </span>
-                      <span className="material-symbols-outlined text-sm text-primary">
-                        drag_indicator
-                      </span>
-                    </>
-                  )}
+                {activeTab === "phase3" && (
+                  <div className="flex items-center gap-1 bg-white dark:bg-[#1b0f0d] border border-gray-200 dark:border-[#3a201d] rounded-lg p-0.5">
+                    {(["ALL", "DIRECTA", "CONSOLACION"] as const).map((b) => (
+                      <button
+                        key={b}
+                        type="button"
+                        onClick={() => setPhase3BracketFilter(b)}
+                        className={`px-2 py-1 rounded text-[11px] font-bold transition-colors ${
+                          phase3BracketFilter === b
+                            ? "bg-primary text-white"
+                            : "text-gray-500 hover:text-gray-900 dark:hover:text-white"
+                        }`}
+                      >
+                        {b === "ALL" ? "Todos" : b === "DIRECTA" ? "General" : "Consolación"}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 {(isPhase2Started || activeTab === "phase3") &&
                   competition.type !== "KNOCKOUT" && (
                     <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400">
@@ -1404,8 +1502,22 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     </div>
                   </div>
                   {currentViewMatches.length === 0 ? (
-                    <div className="text-center py-8 text-gray-500">
-                      <p>No hay partidas generadas para esta ronda.</p>
+                    <div className="text-center py-8 text-gray-500 space-y-3">
+                      <p>
+                        {activeTab === "phase3" && !isPhase3Started
+                          ? "Los cuadros General y Consolación aún no se han generado."
+                          : "No hay partidas generadas para esta ronda."}
+                      </p>
+                      {activeTab === "phase3" && !isPhase3Started && (
+                        <button
+                          type="button"
+                          onClick={() => setShowBracketSplitModal(true)}
+                          className="px-4 py-2 bg-primary hover:bg-primary-hover text-white text-xs font-bold rounded-lg shadow-sm inline-flex items-center gap-2 transition-colors"
+                        >
+                          <span className="material-symbols-outlined text-base">account_tree</span>
+                          Configurar Cuadros: General y Consolación
+                        </button>
+                      )}
                     </div>
                   ) : (
                     currentViewMatches.map((match) => (
@@ -1424,7 +1536,12 @@ export const Dashboard: React.FC<DashboardProps> = ({
                               className="hover:text-primary transition-colors flex flex-col items-start gap-0 group/court"
                             >
                               <div className="flex items-center gap-1">
-                                <span>Pista {match.court}</span>
+                                <span>{match.court > 0 ? `Pista ${match.court}` : "Exento"}</span>
+                                {match.bracket && (
+                                  <span className={`ml-1 text-[10px] font-bold normal-case ${match.bracket === "CONSOLACION" ? "text-amber-600" : "text-primary"}`}>
+                                    · {match.bracket === "CONSOLACION" ? "Consolación" : match.bracket === "REPESCA" ? "Repesca" : "General"}
+                                  </span>
+                                )}
                                 <span className="material-symbols-outlined text-[14px] opacity-0 group-hover/court:opacity-100 transition-opacity">edit</span>
                               </div>
                               {match.customLabel && (
@@ -1790,7 +1907,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
       </div>
 
       {/* Footer Action */}
-      {phase1Status === "COMPLETED" && !isPhase2Started && (
+      {phase1Status === "COMPLETED" && !isPhase2Started && !isPhase3Started && competition.type !== "KNOCKOUT" && (
         <motion.div
           initial={{ y: 100 }}
           animate={{ y: 0 }}
@@ -1798,28 +1915,55 @@ export const Dashboard: React.FC<DashboardProps> = ({
         >
           <div className="flex items-center gap-3 text-sm text-gray-600 dark:text-gray-400">
             <span className="material-symbols-outlined text-amber-500">
-              warning
+              sports_score
             </span>
             <span>
-              La Fase 1 está oficialmente cerrada. Al proceder se generarán las
-              asignaciones de Grupos basadas en la clasificación.
+              {hasGroupPhase
+                ? "El Suizo ha finalizado. Puedes iniciar los Grupos o saltar directo a elegir Cuadro General y Consolación."
+                : "El Suizo Internacional está completo. Elige los equipos de Cuadro General y Consolación para generar los cruces."}
             </span>
           </div>
-          <div className="flex items-center gap-4 w-full sm:w-auto">
-            <button className="flex-1 sm:flex-none px-6 py-2.5 rounded-lg border border-gray-200 dark:border-[#3a201d] text-gray-900 dark:text-white font-bold hover:bg-gray-50 dark:hover:bg-[#251614] transition-colors">
-              Guardar Borrador
-            </button>
+          <div className="flex items-center gap-3 w-full sm:w-auto flex-wrap">
+            {hasGroupPhase && (
+              <button
+                onClick={handleStartPhase2}
+                className="flex-1 sm:flex-none px-5 py-2.5 rounded-lg border border-gray-300 dark:border-[#3a201d] text-gray-900 dark:text-white font-bold hover:bg-gray-50 dark:hover:bg-[#251614] transition-colors text-sm"
+              >
+                Iniciar Fase de Grupos
+              </button>
+            )}
             <button
-              onClick={handleStartPhase2}
-              className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-6 py-2.5 rounded-lg bg-primary hover:bg-primary-dark text-white font-bold shadow-md hover:shadow-lg transition-all transform hover:-translate-y-0.5"
+              onClick={() => setShowBracketSplitModal(true)}
+              className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-6 py-2.5 rounded-lg bg-primary hover:bg-primary-hover text-white font-bold shadow-md transition-all text-sm"
             >
-              <span>Confirmar e Iniciar Fase de Grupos</span>
+              <span>Elegir General y Consolación</span>
               <span className="material-symbols-outlined text-sm">
                 arrow_forward
               </span>
             </button>
           </div>
         </motion.div>
+      )}
+      {competition && (
+        <BracketSplitModal
+          isOpen={showBracketSplitModal}
+          onClose={() => setShowBracketSplitModal(false)}
+          competition={competition}
+          teams={teams}
+          onConfirm={async (generalTeams, consolationTeams, generalCount, consolationCount) => {
+            if (onStartFinalBrackets) {
+              await onStartFinalBrackets(
+                competition.id,
+                generalTeams,
+                consolationTeams,
+                generalCount,
+                consolationCount,
+              );
+              setIsPhase3Started(true);
+              setActiveTab("phase3");
+            }
+          }}
+        />
       )}
       {/* Add Manual Match Modal */}
       {showAddMatchModal && competition && (

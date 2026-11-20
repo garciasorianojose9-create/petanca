@@ -1,13 +1,32 @@
-import { Team, Group, Match } from '../types';
+import { Team, Group, Match, Competition } from '../types';
 
-export const generatePoules = (teams: Team[], competitionId: string, qualifiersCount: number = 16): Group[] => {
-    // 1. Sort teams by Points > Buchholz > Diff (Shuffle first to resolve ties randomly)
-    const shuffledTeams = [...teams].sort(() => Math.random() - 0.5);
-    const sortedTeams = shuffledTeams.sort((a, b) => {
+export const competitionHasGroupPhase = (
+    comp?: Competition | null,
+    existingGroupsCount: number = 0
+): boolean => {
+    if (!comp) return false;
+    if (comp.type === 'KNOCKOUT') return false;
+    if (existingGroupsCount > 0) return true;
+    if (Array.isArray(comp.phases)) {
+        return comp.phases.some((p) => p.type === 'POULES');
+    }
+    return true;
+};
+
+export const sortSwissStandings = (teams: Team[]): Team[] => {
+    return [...teams].sort((a, b) => {
         if ((b.pts || 0) !== (a.pts || 0)) return (b.pts || 0) - (a.pts || 0);
         if ((b.bh || 0) !== (a.bh || 0)) return (b.bh || 0) - (a.bh || 0);
-        return (b.diff || 0) - (a.diff || 0);
+        if ((b.fbh || 0) !== (a.fbh || 0)) return (b.fbh || 0) - (a.fbh || 0);
+        if ((b.diff || 0) !== (a.diff || 0)) return (b.diff || 0) - (a.diff || 0);
+        return (a.rank || 9999) - (b.rank || 9999);
     });
+};
+
+export const generatePoules = (teams: Team[], competitionId: string, qualifiersCount: number = 16): Group[] => {
+    // 1. Sort teams by International Swiss Rules (Shuffle first to resolve full ties randomly)
+    const shuffledTeams = [...teams].sort(() => Math.random() - 0.5);
+    const sortedTeams = sortSwissStandings(shuffledTeams);
 
     // 2. Take top qualifiers
     const actualQualifiersCount = Math.min(qualifiersCount, sortedTeams.length);
@@ -266,22 +285,48 @@ export const generateSwissPairings = (
     roundNumber: number,
     availableCourts: number[]
 ): Match[] => {
-    // 1. Sort teams by Points > Buchholz > Diff
+    // 1. Sort teams strictly by International Swiss tiebreakers: Pts > BH > FBH > Diff
     let sortedTeams = [...teams];
     if (roundNumber === 1) {
-        // Sorteo real para la primera ronda
         sortedTeams = sortedTeams.sort(() => Math.random() - 0.5);
     } else {
-        sortedTeams = sortedTeams.sort((a, b) => {
-            if ((b.pts || 0) !== (a.pts || 0)) return (b.pts || 0) - (a.pts || 0);
-            if ((b.bh || 0) !== (a.bh || 0)) return (b.bh || 0) - (a.bh || 0);
-            return (b.diff || 0) - (a.diff || 0);
-        });
+        sortedTeams = sortSwissStandings(sortedTeams);
     }
 
     const pairings: Match[] = [];
     const pairedTeamIds = new Set<string>();
     const usedCourts = new Set<number>();
+
+    // Handle odd number of teams: assign BYE to the lowest-ranked team that hasn't received a BYE yet
+    if (sortedTeams.length % 2 === 1) {
+        const hasReceivedBye = (teamId: string) =>
+            previousMatches.some(
+                (m) =>
+                    (m.team1.id === teamId && m.team2.id.startsWith('bye')) ||
+                    (m.team2.id === teamId && m.team1.id.startsWith('bye'))
+            );
+
+        let byeIdx = sortedTeams.length - 1;
+        for (let idx = sortedTeams.length - 1; idx >= 0; idx--) {
+            if (!hasReceivedBye(sortedTeams[idx].id)) {
+                byeIdx = idx;
+                break;
+            }
+        }
+        const byeTeam = sortedTeams[byeIdx];
+        pairedTeamIds.add(byeTeam.id);
+        pairings.push({
+            id: `match-${roundNumber}-${byeTeam.id}-BYE-${Date.now()}`,
+            competitionId: byeTeam.competitionId || '',
+            team1: byeTeam,
+            team2: { id: 'bye', name: 'EXENTO (BYE)', players: [], avatar: '', status: 'eliminated' },
+            score1: 13,
+            score2: 0,
+            court: 0,
+            status: 'finished',
+            round: `Swiss Round ${roundNumber}`,
+        });
+    }
 
     // Helper to check if played before
     const hasPlayed = (team1Id: string, team2Id: string) => {
@@ -333,18 +378,12 @@ export const generateSwissPairings = (
             pairedTeamIds.add(team1.id);
             pairedTeamIds.add(bestOpponent.id);
 
-            // Assign Court
-            // Find court with minimum previous usage by these teams
+            // Assign Court with minimum previous usage by these teams
             let assignedCourt = -1;
             let minUsage = Infinity;
-            
-            // Filter out already used courts for this round
             const availableForThisMatch = shuffledCourts.filter(c => !usedCourts.has(c));
-            
-            // If no courts left (shouldn't happen if courts >= matches), reuse used ones
             const candidateCourts = availableForThisMatch.length > 0 ? availableForThisMatch : shuffledCourts;
 
-            // Find best court among candidates
             for (const court of candidateCourts) {
                 const usage = countPlayedOnCourt(team1.id, court) + countPlayedOnCourt(bestOpponent.id, court);
                 if (usage < minUsage) {
@@ -353,7 +392,6 @@ export const generateSwissPairings = (
                 }
             }
             
-            // If we somehow didn't pick one (e.g. empty candidates), pick random
             if (assignedCourt === -1) {
                 assignedCourt = candidateCourts[0] || 0;
             }
@@ -361,7 +399,7 @@ export const generateSwissPairings = (
             usedCourts.add(assignedCourt);
 
             pairings.push({
-                id: `match-${roundNumber}-${team1.id}-${bestOpponent.id}-${Date.now()}`,
+                id: `match-${roundNumber}-${team1.id}-${bestOpponent.id}-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
                 competitionId: team1.competitionId || '',
                 team1: team1,
                 team2: bestOpponent,

@@ -31,7 +31,7 @@ export const CreateCompetition: React.FC<CreateCompetitionProps> = ({
 
   // Swiss Config
   const [totalRounds, setTotalRounds] = useState<number>(4);
-  const [swissTiebreaker, setSwissTiebreaker] = useState<string>("Buchholz");
+  const [swissTiebreaker, setSwissTiebreaker] = useState<string>("Buchholz Internacional");
 
   // Group Phase Config
   const [qualifiersCount, setQualifiersCount] = useState<number>(16);
@@ -40,34 +40,75 @@ export const CreateCompetition: React.FC<CreateCompetitionProps> = ({
   >("top2");
   const [bestThirdsCount, setBestThirdsCount] = useState<number>(2);
 
-  // Phases
+  // Final General + Consolation Defaults
+  const [mainBracketCount, setMainBracketCount] = useState<number>(8);
+  const [consolationBracketCount, setConsolationBracketCount] = useState<number>(8);
+
+  // Phases (default: Suizo Internacional + Cuadros General/Consolación sin grupos obligatorios)
+  const [structurePreset, setStructurePreset] = useState<"SWISS_BRACKETS" | "SWISS_GROUPS_BRACKETS" | "KNOCKOUT">("SWISS_BRACKETS");
   const [phases, setPhases] = useState<any[]>([
     {
       id: "1",
       type: "SWISS",
       totalRounds: 4,
-      swissTiebreaker: "Buchholz",
+      swissTiebreaker: "Buchholz Internacional",
       status: "PENDING",
+      timeLimit: 60,
     },
-    {
-      id: "2",
-      type: "POULES",
-      qualifiersCount: 16,
-      qualificationRule: "top2",
-      status: "PENDING",
-    },
-    { id: "3", type: "KNOCKOUT", status: "PENDING" },
+    { id: "2", type: "KNOCKOUT", status: "PENDING", timeLimit: 60 },
   ]);
 
+  const applyStructurePreset = (preset: "SWISS_BRACKETS" | "SWISS_GROUPS_BRACKETS" | "KNOCKOUT") => {
+    setStructurePreset(preset);
+    if (preset === "KNOCKOUT") {
+      setTournamentType("KNOCKOUT");
+      return;
+    }
+    setTournamentType("STANDARD");
+    if (preset === "SWISS_BRACKETS") {
+      setPhases([
+        {
+          id: "1",
+          type: "SWISS",
+          totalRounds,
+          swissTiebreaker,
+          status: "PENDING",
+          timeLimit: 60,
+        },
+        { id: "2", type: "KNOCKOUT", status: "PENDING", timeLimit: 60 },
+      ]);
+    } else {
+      setPhases([
+        {
+          id: "1",
+          type: "SWISS",
+          totalRounds,
+          swissTiebreaker,
+          status: "PENDING",
+          timeLimit: 60,
+        },
+        {
+          id: "2",
+          type: "POULES",
+          qualifiersCount,
+          qualificationRule,
+          status: "PENDING",
+          timeLimit: 45,
+        },
+        { id: "3", type: "KNOCKOUT", status: "PENDING", timeLimit: 60 },
+      ]);
+    }
+  };
+
   const handleAddPhase = (type: "SWISS" | "POULES" | "KNOCKOUT") => {
-    const id = (phases.length + 1).toString();
+    const id = `${Date.now()}-${phases.length + 1}`;
     const newPhase: any =
       type === "SWISS"
         ? {
             id,
             type,
-            totalRounds: 4,
-            swissTiebreaker: "Buchholz",
+            totalRounds,
+            swissTiebreaker,
             status: "PENDING",
             timeLimit: 60,
           }
@@ -75,13 +116,15 @@ export const CreateCompetition: React.FC<CreateCompetitionProps> = ({
           ? {
               id,
               type,
-              qualifiersCount: 16,
-              qualificationRule: "top2",
+              qualifiersCount,
+              qualificationRule,
               status: "PENDING",
               timeLimit: 45,
             }
           : { id, type, status: "PENDING", timeLimit: 60 };
-    setPhases([...phases, newPhase]);
+    const nextPhases = [...phases, newPhase];
+    setPhases(nextPhases);
+    setStructurePreset(nextPhases.some((p) => p.type === "POULES") ? "SWISS_GROUPS_BRACKETS" : "SWISS_BRACKETS");
   };
 
   const handleUpdatePhase = (id: string, updates: any) => {
@@ -89,7 +132,9 @@ export const CreateCompetition: React.FC<CreateCompetitionProps> = ({
   };
 
   const handleRemovePhase = (id: string) => {
-    setPhases(phases.filter((p) => p.id !== id));
+    const nextPhases = phases.filter((p) => p.id !== id);
+    setPhases(nextPhases);
+    setStructurePreset(nextPhases.some((p) => p.type === "POULES") ? "SWISS_GROUPS_BRACKETS" : "SWISS_BRACKETS");
   };
 
   // Map State
@@ -149,10 +194,12 @@ export const CreateCompetition: React.FC<CreateCompetitionProps> = ({
       return;
     }
 
+    const hasPoulesPhase = tournamentType === "STANDARD" && phases.some((p) => p.type === "POULES");
+
     const newComp: Competition = {
       id: Date.now().toString(),
       name: name,
-      organizer: "Fed. Petanca Murcia", // Default
+      organizer: "Fed. Petanca Murcia",
       location: venue || locationQuery.split(",")[0] || "Murcia",
       startDate: startDate,
       endDate: endDate || startDate,
@@ -174,7 +221,15 @@ export const CreateCompetition: React.FC<CreateCompetitionProps> = ({
           ? phases.map((p, i) => ({
               ...p,
               id: `phase-${i + 1}`,
-              name: `Fase ${i + 1}: ${p.type === "SWISS" ? "Suizo" : p.type === "POULES" ? "Grupos" : "Cuadro"}`,
+              totalRounds: p.type === "SWISS" ? totalRounds : p.totalRounds,
+              swissTiebreaker: p.type === "SWISS" ? swissTiebreaker : p.swissTiebreaker,
+              qualifiersCount: p.type === "POULES" ? qualifiersCount : mainBracketCount,
+              name:
+                p.type === "SWISS"
+                  ? `Fase ${i + 1}: Suizo Internacional`
+                  : p.type === "POULES"
+                    ? `Fase ${i + 1}: Grupos`
+                    : `Fase ${i + 1}: General y Consolación`,
             }))
           : undefined,
       courtStart: typeof courtStart === "number" ? courtStart : undefined,
@@ -185,10 +240,12 @@ export const CreateCompetition: React.FC<CreateCompetitionProps> = ({
       hasRepesca: tournamentType === "KNOCKOUT" ? hasRepesca : undefined,
       repescaOrigin:
         tournamentType === "KNOCKOUT" && hasRepesca ? repescaOrigin : undefined,
-      qualifiersCount: qualifiersCount,
-      qualificationRule: qualificationRule,
+      qualifiersCount: hasPoulesPhase ? qualifiersCount : mainBracketCount,
+      qualificationRule: hasPoulesPhase ? qualificationRule : undefined,
       bestThirdsCount:
-        qualificationRule === "top2_thirds" ? bestThirdsCount : undefined,
+        hasPoulesPhase && qualificationRule === "top2_thirds" ? bestThirdsCount : undefined,
+      mainBracketCount: tournamentType === "STANDARD" ? mainBracketCount : undefined,
+      consolationBracketCount: tournamentType === "STANDARD" ? consolationBracketCount : undefined,
     };
 
     onCreate(newComp);
@@ -620,11 +677,12 @@ export const CreateCompetition: React.FC<CreateCompetitionProps> = ({
                 <label className="text-sm font-bold text-slate-700 dark:text-slate-300 block">
                   Tipo de Torneo
                 </label>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <button
-                    onClick={() => setTournamentType("STANDARD")}
+                    type="button"
+                    onClick={() => applyStructurePreset("SWISS_BRACKETS")}
                     className={`p-4 rounded-lg border text-left transition-all ${
-                      tournamentType === "STANDARD"
+                      tournamentType === "STANDARD" && structurePreset === "SWISS_BRACKETS"
                         ? "bg-primary/5 border-primary ring-1 ring-primary"
                         : "bg-white dark:bg-zinc-900 border-slate-200 dark:border-zinc-800 hover:border-primary/50"
                     }`}
@@ -633,16 +691,38 @@ export const CreateCompetition: React.FC<CreateCompetitionProps> = ({
                       <span className="material-symbols-outlined text-primary">
                         format_list_numbered
                       </span>
-                      <span className="font-bold text-slate-900 dark:text-white">
-                        Estándar
+                      <span className="font-bold text-sm text-slate-900 dark:text-white">
+                        Suizo + Gen/Con
                       </span>
                     </div>
                     <p className="text-xs text-slate-500 dark:text-slate-400">
-                      Suizo + Grupos + Finales
+                      Suizo Internacional directo a Cuadro General y Consolación
                     </p>
                   </button>
                   <button
-                    onClick={() => setTournamentType("KNOCKOUT")}
+                    type="button"
+                    onClick={() => applyStructurePreset("SWISS_GROUPS_BRACKETS")}
+                    className={`p-4 rounded-lg border text-left transition-all ${
+                      tournamentType === "STANDARD" && structurePreset === "SWISS_GROUPS_BRACKETS"
+                        ? "bg-primary/5 border-primary ring-1 ring-primary"
+                        : "bg-white dark:bg-zinc-900 border-slate-200 dark:border-zinc-800 hover:border-primary/50"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="material-symbols-outlined text-primary">
+                        grid_view
+                      </span>
+                      <span className="font-bold text-sm text-slate-900 dark:text-white">
+                        Con Fase de Grupos
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      Suizo + Poules (Grupos) + Finales
+                    </p>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyStructurePreset("KNOCKOUT")}
                     className={`p-4 rounded-lg border text-left transition-all ${
                       tournamentType === "KNOCKOUT"
                         ? "bg-primary/5 border-primary ring-1 ring-primary"
@@ -653,7 +733,7 @@ export const CreateCompetition: React.FC<CreateCompetitionProps> = ({
                       <span className="material-symbols-outlined text-primary">
                         account_tree
                       </span>
-                      <span className="font-bold text-slate-900 dark:text-white">
+                      <span className="font-bold text-sm text-slate-900 dark:text-white">
                         Eliminación Directa
                       </span>
                     </div>
@@ -720,10 +800,7 @@ export const CreateCompetition: React.FC<CreateCompetitionProps> = ({
                   </label>
                 </div>
                 <div className="text-xs text-slate-500 mb-2">
-                  Nota: Actualmente el sistema soporta la visualización estándar
-                  del flujo Fase 1 a Fase 2 a Fase 3. Puedes editar el formato
-                  general arriba. Los rangos de pistas se asignan
-                  individualmente durante el panel de control del torneo.
+                  Solo aparecerán en el Panel Admin las fases que mantengas aquí. Si eliminas "Grupos", pasarás directamente del Suizo Internacional a elegir los equipos para Cuadro General y Consolación.
                 </div>
 
                 {tournamentType === "STANDARD" ? (
@@ -731,49 +808,43 @@ export const CreateCompetition: React.FC<CreateCompetitionProps> = ({
                     {phases.map((phase, idx) => (
                       <div
                         key={phase.id}
-                        className="bg-white dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 rounded-lg p-4 relative group hover:border-primary/30 transition-colors shadow-sm"
+                        className="bg-white dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 rounded-lg p-4 hover:border-primary/40 transition-colors"
                       >
-                        <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-primary rounded-l-lg"></div>
-                        <div className="flex justify-between items-start mb-4 pl-3">
+                        <div className="flex justify-between items-start mb-4">
                           <div>
                             <h4 className="font-bold text-slate-900 dark:text-white flex items-center gap-2">
                               {phase.type === "SWISS"
-                                ? `Fase ${idx + 1}: Sistema Suizo`
+                                ? `Fase ${idx + 1}: Suizo Internacional`
                                 : phase.type === "POULES"
-                                  ? `Fase ${idx + 1}: Grupos`
-                                  : `Fase ${idx + 1}: Eliminatoria`}
-                              <span className="bg-primary/10 text-primary text-[10px] px-2 py-0.5 rounded-full uppercase tracking-wider font-bold">
-                                {phase.type === "SWISS"
-                                  ? "Clasificatoria"
-                                  : phase.type === "POULES"
-                                    ? "Grupos"
-                                    : "Finales"}
-                              </span>
+                                  ? `Fase ${idx + 1}: Grupos (Poules)`
+                                  : `Fase ${idx + 1}: Cuadros General y Consolación`}
                             </h4>
-                            <p className="text-xs text-slate-500 mt-1">
+                            <p className="text-xs text-slate-500 mt-0.5">
                               {phase.type === "SWISS"
-                                ? "Emparejamiento estándar sistema Suizo."
+                                ? "Clasificación oficial por Puntos · Buchholz · Buchholz Fino · Diferencia."
                                 : phase.type === "POULES"
-                                  ? "Formato GSL (Grupos)."
-                                  : "Eliminación directa progresiva."}
+                                  ? "Formato de grupos previo a las eliminatorias."
+                                  : "Reparto configurable desde el ranking con ajuste manual y cruce 1.º vs último."}
                             </p>
                           </div>
                           <button
+                            type="button"
                             onClick={() => handleRemovePhase(phase.id)}
-                            className="text-slate-400 hover:text-red-500 transition-colors"
+                            className="text-slate-400 hover:text-red-500 transition-colors p-1"
+                            title="Quitar fase"
                           >
-                            <span className="material-symbols-outlined">
+                            <span className="material-symbols-outlined text-lg">
                               delete
                             </span>
                           </button>
                         </div>
                         
-                        <div className="pl-3 mb-4">
+                        <div className="mb-4">
                           <div className="flex justify-between items-end mb-1">
-                            <label className="text-xs font-bold text-slate-500 uppercase tracking-wider block">
-                              Duración (minutos)
+                            <label className="text-xs font-bold text-slate-500 block">
+                              Duración de partida (minutos)
                             </label>
-                            <span className="text-[10px] text-slate-400 dark:text-zinc-500">0 = Sin límite</span>
+                            <span className="text-[11px] text-slate-400 dark:text-zinc-500">0 = Sin límite</span>
                           </div>
                           <div className="relative">
                             <input
@@ -781,45 +852,50 @@ export const CreateCompetition: React.FC<CreateCompetitionProps> = ({
                               min="0"
                               value={phase.timeLimit !== undefined ? phase.timeLimit : 60}
                               onChange={(e) => handleUpdatePhase(phase.id, { timeLimit: e.target.value === '' ? 0 : parseInt(e.target.value) })}
-                              className="w-full text-sm border border-slate-200 dark:border-zinc-800 rounded-md py-2 px-3 focus:ring-primary/20 focus:border-primary bg-white dark:bg-zinc-900 dark:text-white"
+                              className="w-full text-sm border border-slate-200 dark:border-zinc-800 rounded-md py-2 px-3 focus:ring-primary/20 focus:border-primary bg-white dark:bg-zinc-900 dark:text-white font-mono tabular-nums"
                             />
                             <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 material-symbols-outlined text-sm">schedule</span>
                           </div>
                         </div>
 
                         {phase.type === "SWISS" && (
-                          <div className="pl-3 grid grid-cols-2 gap-4">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div>
-                              <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 block">
-                                Rondas
+                              <label className="text-xs font-bold text-slate-500 mb-1 block">
+                                Rondas Suizo
                               </label>
                               <select
                                 value={totalRounds}
-                                onChange={(e) =>
-                                  setTotalRounds(parseInt(e.target.value))
-                                }
+                                onChange={(e) => {
+                                  const val = parseInt(e.target.value);
+                                  setTotalRounds(val);
+                                  handleUpdatePhase(phase.id, { totalRounds: val });
+                                }}
                                 className="w-full text-sm border border-slate-200 dark:border-zinc-800 rounded-md py-2 px-3 focus:ring-primary/20 focus:border-primary bg-white dark:bg-zinc-900 dark:text-white"
                               >
-                                <option value={3}>3 Rondas</option>
-                                <option value={4}>4 Rondas</option>
-                                <option value={5}>5 Rondas</option>
+                                {[2, 3, 4, 5, 6, 7, 8].map((r) => (
+                                  <option key={r} value={r}>
+                                    {r} Rondas
+                                  </option>
+                                ))}
                               </select>
                             </div>
                             <div>
-                              <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 block">
-                                Desempate
+                              <label className="text-xs font-bold text-slate-500 mb-1 block">
+                                Criterio de Desempate
                               </label>
                               <select
                                 value={swissTiebreaker}
-                                onChange={(e) =>
-                                  setSwissTiebreaker(e.target.value)
-                                }
+                                onChange={(e) => {
+                                  setSwissTiebreaker(e.target.value);
+                                  handleUpdatePhase(phase.id, { swissTiebreaker: e.target.value });
+                                }}
                                 className="w-full text-sm border border-slate-200 dark:border-zinc-800 rounded-md py-2 px-3 focus:ring-primary/20 focus:border-primary bg-white dark:bg-zinc-900 dark:text-white"
                               >
-                                <option value="Buchholz">Buchholz</option>
-                                <option value="Enfrentamiento Directo">
-                                  Enfrentamiento Directo
+                                <option value="Buchholz Internacional">
+                                  Internacional (Pts &gt; BH &gt; FBH &gt; +-)
                                 </option>
+                                <option value="Buchholz">Buchholz</option>
                                 <option value="Diferencia de Puntos">
                                   Diferencia de Puntos
                                 </option>
@@ -828,10 +904,10 @@ export const CreateCompetition: React.FC<CreateCompetitionProps> = ({
                           </div>
                         )}
                         {phase.type === "POULES" && (
-                          <div className="pl-3 grid grid-cols-2 gap-4">
+                          <div className="grid grid-cols-2 gap-4">
                             <div className="col-span-2 md:col-span-1">
-                              <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 block">
-                                Equipos que pasan
+                              <label className="text-xs font-bold text-slate-500 mb-1 block">
+                                Equipos que pasan a Grupos
                               </label>
                               <input
                                 type="number"
@@ -841,11 +917,11 @@ export const CreateCompetition: React.FC<CreateCompetitionProps> = ({
                                     parseInt(e.target.value) || 0,
                                   )
                                 }
-                                className="w-full text-sm border border-slate-200 dark:border-zinc-800 rounded-md py-2 px-3 focus:ring-primary/20 focus:border-primary bg-white dark:bg-zinc-900 dark:text-white"
+                                className="w-full text-sm border border-slate-200 dark:border-zinc-800 rounded-md py-2 px-3 focus:ring-primary/20 focus:border-primary bg-white dark:bg-zinc-900 dark:text-white font-mono tabular-nums"
                               />
                             </div>
                             <div className="col-span-2 md:col-span-1">
-                              <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 block">
+                              <label className="text-xs font-bold text-slate-500 mb-1 block">
                                 Regla de Clasificación
                               </label>
                               <select
@@ -862,6 +938,38 @@ export const CreateCompetition: React.FC<CreateCompetitionProps> = ({
                                   Pasan 2 mejores + terceros
                                 </option>
                               </select>
+                            </div>
+                          </div>
+                        )}
+                        {phase.type === "KNOCKOUT" && (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div>
+                              <label className="text-xs font-bold text-slate-500 mb-1 block">
+                                Plazas por defecto a General (Top X)
+                              </label>
+                              <input
+                                type="number"
+                                min={0}
+                                value={mainBracketCount}
+                                onChange={(e) =>
+                                  setMainBracketCount(Math.max(0, parseInt(e.target.value, 10) || 0))
+                                }
+                                className="w-full text-sm border border-slate-200 dark:border-zinc-800 rounded-md py-2 px-3 focus:ring-primary/20 focus:border-primary bg-white dark:bg-zinc-900 dark:text-white font-mono tabular-nums"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-xs font-bold text-slate-500 mb-1 block">
+                                Plazas por defecto a Consolación (Siguientes Y)
+                              </label>
+                              <input
+                                type="number"
+                                min={0}
+                                value={consolationBracketCount}
+                                onChange={(e) =>
+                                  setConsolationBracketCount(Math.max(0, parseInt(e.target.value, 10) || 0))
+                                }
+                                className="w-full text-sm border border-slate-200 dark:border-zinc-800 rounded-md py-2 px-3 focus:ring-primary/20 focus:border-primary bg-white dark:bg-zinc-900 dark:text-white font-mono tabular-nums"
+                              />
                             </div>
                           </div>
                         )}

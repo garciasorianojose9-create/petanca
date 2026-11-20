@@ -1,8 +1,9 @@
 
 import React, { useState, useEffect } from 'react';
-import { AppView, PlayerRegistry, Competition, Match } from '../types';
+import { AppView, PlayerRegistry, Competition, Match, Group } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
 import { api } from '../src/services/api';
+import { competitionHasGroupPhase } from '../utils/tournamentUtils';
 
 interface LayoutProps {
     children: React.ReactNode;
@@ -15,6 +16,7 @@ interface LayoutProps {
     onUpdateUser?: (user: PlayerRegistry) => void;
     selectedCompetition?: Competition | null;
     matches?: Match[];
+    groups?: Group[];
 }
 
 import { FPRM_LOGO_BASE64 } from '../src/constants';
@@ -29,7 +31,8 @@ export const Layout: React.FC<LayoutProps> = ({
     onLogout,
     onUpdateUser,
     selectedCompetition,
-    matches = []
+    matches = [],
+    groups = []
 }) => {
     const [showMobileMenu, setShowMobileMenu] = useState(false);
     const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
@@ -92,6 +95,14 @@ export const Layout: React.FC<LayoutProps> = ({
         // Case insensitive check and trim
         const cleanUsername = currentUser.username?.toLowerCase().trim();
         const isAdmin = cleanUsername === 'admin' || userRole === 'ADMIN';
+
+        // Visibility Rule: POULES (hide when selected competition does not include a group phase)
+        if (item.view === AppView.POULES && selectedCompetition) {
+            const compGroupsCount = groups.filter(g => g.competitionId === selectedCompetition.id).length;
+            if (!competitionHasGroupPhase(selectedCompetition, compGroupsCount)) {
+                return false;
+            }
+        }
 
         // Visibility Rule: BRACKET
         if (item.view === AppView.BRACKET) {

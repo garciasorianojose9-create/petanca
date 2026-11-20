@@ -1,5 +1,90 @@
 import { Team, Match, Competition } from '../types';
 
+/**
+ * Generates standard seeded bracket order for a power-of-2 bracket size.
+ * E.g. 8 -> [1, 8, 4, 5, 2, 7, 3, 6] => R1 matches: 1v8, 4v5, 2v7, 3v6.
+ */
+export const buildSeededBracketSlots = (bracketSize: number): number[] => {
+    let slots = [1, 2];
+    while (slots.length < bracketSize) {
+        const nextTotal = slots.length * 2 + 1;
+        const expanded: number[] = [];
+        for (const seed of slots) {
+            expanded.push(seed, nextTotal - seed);
+        }
+        slots = expanded;
+    }
+    return slots;
+};
+
+export const generateSeededKnockoutFirstRound = (
+    rankedTeams: Team[],
+    competitionId: string,
+    availableCourts: number[],
+    bracket: 'DIRECTA' | 'CONSOLACION' | 'REPESCA' = 'DIRECTA'
+): Match[] => {
+    if (rankedTeams.length < 2) return [];
+
+    let bracketSize = 2;
+    while (bracketSize < rankedTeams.length) {
+        bracketSize *= 2;
+    }
+
+    const seedSlots = buildSeededBracketSlots(bracketSize);
+    const pairings: Match[] = [];
+    const usedCourts = new Set<number>();
+    const shuffledCourts = [...availableCourts].sort(() => Math.random() - 0.5);
+
+    const pickCourt = () => {
+        const c = shuffledCourts.find((court) => !usedCourts.has(court)) || shuffledCourts[0] || 0;
+        if (c > 0) usedCourts.add(c);
+        return c;
+    };
+
+    for (let i = 0; i < seedSlots.length; i += 2) {
+        const seed1 = seedSlots[i];
+        const seed2 = seedSlots[i + 1];
+        const team1 = rankedTeams[seed1 - 1];
+        const team2 = rankedTeams[seed2 - 1];
+
+        if (!team1 && !team2) continue;
+
+        if (team1 && team2) {
+            pairings.push({
+                id: `match-ko-r1-${bracket}-${team1.id}-${team2.id}-${Date.now()}-${i}`,
+                competitionId,
+                team1,
+                team2,
+                score1: null,
+                score2: null,
+                court: pickCourt(),
+                status: 'scheduled',
+                round: 'Knockout Round 1',
+                bracket,
+                customLabel: `#${seed1} vs #${seed2}`,
+            });
+        } else {
+            const realTeam = team1 || team2!;
+            const realSeed = team1 ? seed1 : seed2;
+            pairings.push({
+                id: `match-ko-r1-${bracket}-${realTeam.id}-BYE-${Date.now()}-${i}`,
+                competitionId,
+                team1: realTeam,
+                team2: { id: 'bye', name: 'EXENTO (BYE)', players: [], avatar: '', status: 'eliminated' },
+                score1: 13,
+                score2: 0,
+                court: 0,
+                status: 'finished',
+                round: 'Knockout Round 1',
+                bracket,
+                customLabel: `#${realSeed} Exento`,
+            });
+        }
+    }
+
+    return pairings;
+};
+
 export const generateKnockoutFirstRound = (
     teams: Team[],
     competitionId: string,
@@ -13,14 +98,14 @@ export const generateKnockoutFirstRound = (
 
     for (let i = 0; i < shuffledTeams.length; i += 2) {
         const team1 = shuffledTeams[i];
-        let team2 = shuffledTeams[i + 1];
+        const team2 = shuffledTeams[i + 1];
 
-        let assignedCourt = shuffledCourts.find(c => !usedCourts.has(c)) || shuffledCourts[0] || 0;
+        const assignedCourt = shuffledCourts.find(c => !usedCourts.has(c)) || shuffledCourts[0] || 0;
         usedCourts.add(assignedCourt);
 
         if (team2) {
             pairings.push({
-                id: `match-ko-r1-${bracket}-${team1.id}-${team2.id}-${Date.now()}`,
+                id: `match-ko-r1-${bracket}-${team1.id}-${team2.id}-${Date.now()}-${i}`,
                 competitionId,
                 team1,
                 team2,
@@ -34,13 +119,13 @@ export const generateKnockoutFirstRound = (
         } else {
             // BYE
             pairings.push({
-                id: `match-ko-r1-${bracket}-${team1.id}-BYE-${Date.now()}`,
+                id: `match-ko-r1-${bracket}-${team1.id}-BYE-${Date.now()}-${i}`,
                 competitionId,
                 team1,
-                team2: { id: 'bye', name: 'BYE', players: [], avatar: '', status: 'eliminated' },
+                team2: { id: 'bye', name: 'EXENTO (BYE)', players: [], avatar: '', status: 'eliminated' },
                 score1: 13,
                 score2: 0,
-                court: assignedCourt,
+                court: 0,
                 status: 'finished',
                 round: 'Knockout Round 1',
                 bracket: bracket
@@ -71,12 +156,16 @@ export const generateNextKnockoutRound = (
         return []; // Cannot generate next round until current is finished
     }
 
+    const hasPreSplitConsolacion = koMatches.some(
+        (m) => m.round === 'Knockout Round 1' && m.bracket === 'CONSOLACION'
+    );
+
     const newMatches: Match[] = [];
     const usedCourts = new Set<number>();
     const shuffledCourts = [...availableCourts].sort(() => Math.random() - 0.5);
 
     const getCourt = () => {
-        let assignedCourt = shuffledCourts.find(c => !usedCourts.has(c)) || shuffledCourts[0] || 0;
+        const assignedCourt = shuffledCourts.find(c => !usedCourts.has(c)) || shuffledCourts[0] || 0;
         usedCourts.add(assignedCourt);
         return assignedCourt;
     };
@@ -85,19 +174,23 @@ export const generateNextKnockoutRound = (
     const brackets = ['DIRECTA', 'CONSOLACION', 'REPESCA'] as const;
 
     for (const bracket of brackets) {
-        const bracketMatches = currentRoundMatches.filter(m => m.bracket === bracket);
+        const bracketMatches = currentRoundMatches.filter(m => (m.bracket || 'DIRECTA') === bracket);
+        // If this bracket has no matches in the current round or just finished its Final (1 match), do not generate more matches for it
+        if (bracketMatches.length <= 1) {
+            continue;
+        }
         
         const advancingTeams: Team[] = [];
         const losingTeams: Team[] = [];
 
         bracketMatches.forEach(m => {
             if (m.score1 !== null && m.score2 !== null) {
-                if (m.score1 > m.score2) {
+                if (m.score1 >= m.score2) {
                     advancingTeams.push(m.team1);
-                    losingTeams.push(m.team2);
+                    if (!m.team2.id.startsWith('bye')) losingTeams.push(m.team2);
                 } else {
                     advancingTeams.push(m.team2);
-                    losingTeams.push(m.team1);
+                    if (!m.team1.id.startsWith('bye')) losingTeams.push(m.team1);
                 }
             }
         });
@@ -109,7 +202,7 @@ export const generateNextKnockoutRound = (
             
             if (team2) {
                 newMatches.push({
-                    id: `match-ko-r${nextRoundNum}-${bracket}-${team1.id}-${team2.id}-${Date.now()}`,
+                    id: `match-ko-r${nextRoundNum}-${bracket}-${team1.id}-${team2.id}-${Date.now()}-${i}`,
                     competitionId: competition.id,
                     team1,
                     team2,
@@ -122,13 +215,13 @@ export const generateNextKnockoutRound = (
                 });
             } else {
                 newMatches.push({
-                    id: `match-ko-r${nextRoundNum}-${bracket}-${team1.id}-BYE-${Date.now()}`,
+                    id: `match-ko-r${nextRoundNum}-${bracket}-${team1.id}-BYE-${Date.now()}-${i}`,
                     competitionId: competition.id,
                     team1,
-                    team2: { id: 'bye', name: 'BYE', players: [], avatar: '', status: 'eliminated' },
+                    team2: { id: 'bye', name: 'EXENTO (BYE)', players: [], avatar: '', status: 'eliminated' },
                     score1: 13,
                     score2: 0,
-                    court: getCourt(),
+                    court: 0,
                     status: 'finished',
                     round: `Knockout Round ${nextRoundNum}`,
                     bracket: bracket
@@ -136,16 +229,15 @@ export const generateNextKnockoutRound = (
             }
         }
 
-        // Handle losers based on the bracket and round
-        if (currentRoundNum === 1 && bracket === 'DIRECTA') {
-            // Losers of Round 1 go to Consolación
+        // Only send Directa R1 losers to Consolacion in pure KNOCKOUT mode when Consolacion wasn't pre-populated from Swiss
+        if (currentRoundNum === 1 && bracket === 'DIRECTA' && competition.type === 'KNOCKOUT' && !hasPreSplitConsolacion) {
             for (let i = 0; i < losingTeams.length; i += 2) {
                 const team1 = losingTeams[i];
                 const team2 = losingTeams[i+1];
                 
                 if (team2) {
                     newMatches.push({
-                        id: `match-ko-r${nextRoundNum}-CONSOLACION-${team1.id}-${team2.id}-${Date.now()}`,
+                        id: `match-ko-r${nextRoundNum}-CONSOLACION-${team1.id}-${team2.id}-${Date.now()}-${i}`,
                         competitionId: competition.id,
                         team1,
                         team2,
@@ -158,13 +250,13 @@ export const generateNextKnockoutRound = (
                     });
                 } else {
                     newMatches.push({
-                        id: `match-ko-r${nextRoundNum}-CONSOLACION-${team1.id}-BYE-${Date.now()}`,
+                        id: `match-ko-r${nextRoundNum}-CONSOLACION-${team1.id}-BYE-${Date.now()}-${i}`,
                         competitionId: competition.id,
                         team1,
-                        team2: { id: 'bye', name: 'BYE', players: [], avatar: '', status: 'eliminated' },
+                        team2: { id: 'bye', name: 'EXENTO (BYE)', players: [], avatar: '', status: 'eliminated' },
                         score1: 13,
                         score2: 0,
-                        court: getCourt(),
+                        court: 0,
                         status: 'finished',
                         round: `Knockout Round ${nextRoundNum}`,
                         bracket: 'CONSOLACION'
@@ -172,10 +264,7 @@ export const generateNextKnockoutRound = (
                 }
             }
         } else if (competition.hasRepesca && bracket === 'DIRECTA') {
-            // Check if these losers go to Repesca
             let sendToRepesca = false;
-            // "1ª ronda de Directa" means Round 2 of the tournament (since Round 1 was the qualifier)
-            // "2ª ronda de Directa" means Round 3 of the tournament
             if (competition.repescaOrigin === 'ROUND_1' && currentRoundNum === 2) {
                 sendToRepesca = true;
             } else if (competition.repescaOrigin === 'ROUND_2' && currentRoundNum === 3) {
@@ -189,7 +278,7 @@ export const generateNextKnockoutRound = (
                     
                     if (team2) {
                         newMatches.push({
-                            id: `match-ko-r${nextRoundNum}-REPESCA-${team1.id}-${team2.id}-${Date.now()}`,
+                            id: `match-ko-r${nextRoundNum}-REPESCA-${team1.id}-${team2.id}-${Date.now()}-${i}`,
                             competitionId: competition.id,
                             team1,
                             team2,
@@ -202,13 +291,13 @@ export const generateNextKnockoutRound = (
                         });
                     } else {
                         newMatches.push({
-                            id: `match-ko-r${nextRoundNum}-REPESCA-${team1.id}-BYE-${Date.now()}`,
+                            id: `match-ko-r${nextRoundNum}-REPESCA-${team1.id}-BYE-${Date.now()}-${i}`,
                             competitionId: competition.id,
                             team1,
-                            team2: { id: 'bye', name: 'BYE', players: [], avatar: '', status: 'eliminated' },
+                            team2: { id: 'bye', name: 'EXENTO (BYE)', players: [], avatar: '', status: 'eliminated' },
                             score1: 13,
                             score2: 0,
-                            court: getCourt(),
+                            court: 0,
                             status: 'finished',
                             round: `Knockout Round ${nextRoundNum}`,
                             bracket: 'REPESCA'
